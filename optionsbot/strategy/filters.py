@@ -60,8 +60,19 @@ def check_liquidity(quote: OptionQuote, universe: UniverseConfig) -> Optional[st
     (which you don't get to skip) is worse, precisely when you most need out. The width check is
     skipped when the provider gives no bid/ask -- a missing quote is not evidence of a tight
     market, and backtest/slippage.py already models the unknown width explicitly instead.
+
+    When open interest is unknown (`None`) rather than zero, this falls back to daily volume.
+    Polygon's free tier reports no OI at all, and treating that as OI=0 would silently reject
+    every contract in the universe -- a backtest returning zero trades because it had no data,
+    while reading exactly like a backtest returning zero trades because it found no setups.
     """
-    if quote.open_interest < universe.min_option_open_interest:
+    if quote.open_interest is None:
+        if quote.volume < universe.min_option_volume_when_oi_unknown:
+            return (
+                f"illiquid_volume: {quote.contract} traded {quote.volume} contracts "
+                f"< {universe.min_option_volume_when_oi_unknown} (open interest unavailable)"
+            )
+    elif quote.open_interest < universe.min_option_open_interest:
         return (
             f"illiquid_open_interest: {quote.contract} has OI {quote.open_interest} "
             f"< {universe.min_option_open_interest}"

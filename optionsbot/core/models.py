@@ -227,7 +227,11 @@ class OptionQuote(BaseModel):
     ask: Optional[Decimal] = None
     last: Optional[Decimal] = None
     volume: int = 0
-    open_interest: int = 0
+    # None means "this provider cannot tell us", which is NOT the same as zero. Polygon's free
+    # tier omits open interest entirely; defaulting that to 0 made every contract look
+    # completely untraded, so the liquidity floor rejected all of them and the backtest reported
+    # an empty, confident "no signal" instead of "no data". Unknown has to be representable.
+    open_interest: Optional[int] = None
     implied_volatility: Optional[Decimal] = None
     delta: Optional[Decimal] = None
     gamma: Optional[Decimal] = None

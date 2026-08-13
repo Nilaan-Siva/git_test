@@ -82,4 +82,9 @@ class UniverseConfig(BaseModel):
 
     tickers: list[str] = Field(default_factory=lambda: ["SPY", "XSP"])
     min_option_open_interest: int = 100
+    # Fallback liquidity floor for providers that don't report open interest at all (Polygon's
+    # free tier is one). Daily contract volume is a weaker signal than OI -- it says the
+    # contract traded today, not that a position can be exited -- so this gate is a smoke test
+    # for "is anyone trading this at all", not a substitute for the OI floor.
+    min_option_volume_when_oi_unknown: int = 10
     max_bid_ask_spread_pct_of_mid: Decimal = Decimal("0.10")
