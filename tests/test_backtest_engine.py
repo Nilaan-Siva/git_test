@@ -283,9 +283,19 @@ def test_a_provider_with_no_data_at_all_produces_an_empty_but_valid_result():
 # ---- slippage bracketing ---------------------------------------------------------------------------------
 
 
-def test_pessimistic_fills_never_beat_optimistic_ones():
-    """The whole point of running the bracket: if the pessimistic run were ever better, the
-    fill model would be inverted somewhere and every backtest conclusion would be backwards."""
+def test_pessimistic_fills_do_not_beat_optimistic_ones_on_this_market():
+    """A smoke check, NOT an invariant -- and the distinction is load-bearing.
+
+    The real invariant is per fill: a worse fill model never improves an individual trade's
+    price, which test_slippage.py proves directly. At the level of a whole run this can and does
+    invert, because worse fills change which proposals clear `min_credit_pct_of_width` and how
+    the risk manager sizes them, so the two runs take *different trades*. The first real-data
+    backtest showed exactly that: the pessimistic run took three trades and finished ahead of
+    the optimistic run's two.
+
+    So this asserts a property of this particular synthetic market, useful for catching a
+    grossly inverted fill model, and nothing stronger. Do not promote it to a law.
+    """
     optimistic = run_backtest(slippage=SlippageModel.optimistic())
     pessimistic = run_backtest(slippage=SlippageModel.pessimistic())
     assert pessimistic.metrics.ending_equity <= optimistic.metrics.ending_equity

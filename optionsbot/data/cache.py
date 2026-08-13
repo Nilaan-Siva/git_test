@@ -23,6 +23,13 @@ def _opt_decimal(value: object) -> Decimal | None:
     return Decimal(str(value))
 
 
+def _opt_int(value: object) -> int | None:
+    """Parquet round-trips a None int column as NaN, and `int(nan)` is a crash, not a None."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    return int(value)
+
+
 def _opt_str(value: object) -> str | None:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
@@ -93,7 +100,12 @@ class ParquetChainCache:
                     ask=_opt_decimal(row["ask"]),
                     last=_opt_decimal(row["last"]),
                     volume=int(row["volume"]),
-                    open_interest=int(row["open_interest"]),
+                    # Must survive the round trip as None. Coercing an unknown open interest to
+                    # 0 here would resurrect the exact bug OptionQuote.open_interest was made
+                    # Optional to kill: every contract looks untraded, the liquidity floor
+                    # rejects all of them, and the backtest reports zero trades as though it
+                    # found no setups.
+                    open_interest=_opt_int(row["open_interest"]),
                     implied_volatility=_opt_decimal(row["implied_volatility"]),
                     delta=_opt_decimal(row["delta"]),
                     gamma=_opt_decimal(row["gamma"]),

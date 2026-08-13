@@ -77,8 +77,11 @@ class _RequestsHttpClient:
 
     api_key: str
     timeout_seconds: float = 20.0
-    calls_per_minute: int = FREE_TIER_CALLS_PER_MINUTE
-    max_retries: int = 5
+    # One below the documented limit, on purpose. Pacing at exactly 5/min still drew 429s: the
+    # server's window is not the same window the client measures, and a rejected request still
+    # counts against it. Giving up a call a minute is far cheaper than a retry storm.
+    calls_per_minute: int = FREE_TIER_CALLS_PER_MINUTE - 1
+    max_retries: int = 6
     _call_times: list[float] = field(default_factory=list)
 
     def _throttle(self) -> None:
@@ -102,7 +105,12 @@ class _RequestsHttpClient:
             self._throttle()
             resp = requests.get(url, params=params, headers=headers, timeout=self.timeout_seconds)
             if resp.status_code == 429:
-                time.sleep(min(60, 2**attempt * 5))
+                # The limit is per rolling minute, so a full minute of silence is what actually
+                # clears it -- exponential backoff from a few seconds just burns retries against
+                # a window that has not moved. Reset the local ledger too, or the throttle keeps
+                # pacing against calls the server has already forgotten.
+                self._call_times.clear()
+                time.sleep(65)
                 continue
             if resp.status_code == 403:
                 raise DataUnavailableError(f"not entitled to {url}: {resp.text[:200]}")
@@ -180,6 +188,9 @@ class PolygonProvider(ChainProvider):
         self.strike_band_above = strike_band_above
         self.strike_step = strike_step
         self.bar_cache_dir = bar_cache_dir
+        # (ticker, reason) for contracts that could not be loaded; surfaced by the
+        # backfill script so a thinned chain is visible rather than silent.
+        self.skipped_contracts: list[tuple[str, str]] = []
 
     # ---- low-level endpoints ---------------------------------------------------------------
 
@@ -381,7 +392,14 @@ class PolygonProvider(ChainProvider):
                 ticker = raw.get("ticker")
                 if not ticker:
                     continue
-                bars = self.option_bars(ticker, start, min(end, expiration))
+                try:
+                    bars = self.option_bars(ticker, start, min(end, expiration))
+                except DataUnavailableError as exc:
+                    # One contract that will not load must not cost the whole run. Over a
+                    # multi-hour backfill some request will eventually fail; losing a strike
+                    # narrows the chain slightly, losing the run wastes hours of rate limit.
+                    self.skipped_contracts.append((ticker, str(exc)))
+                    continue
                 if bars:
                     loaded.append((raw, bars))
 

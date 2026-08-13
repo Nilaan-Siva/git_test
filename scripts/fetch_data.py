@@ -165,6 +165,11 @@ def main() -> int:
             logger.info("interrupted -- progress is cached, rerun to resume")
             break
 
+    if provider.skipped_contracts:
+        logger.warning(
+            f"{len(provider.skipped_contracts)} contract(s) could not be loaded and are missing "
+            f"from their chains, e.g. {provider.skipped_contracts[0][0]}"
+        )
     logger.info(f"done: written={written} skipped(cached)={skipped} tickers_failed={failed}")
     return 0
 
