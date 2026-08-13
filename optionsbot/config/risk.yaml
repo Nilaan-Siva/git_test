@@ -1,0 +1,29 @@
+# Hard risk limits. This file is the single source of truth for account protection.
+# The risk manager (optionsbot/risk/) reads this and enforces it as a pure veto gate: it can
+# reject a trade a strategy proposes, but it never loosens a limit on its own. The Phase 7
+# learning loop is NOT allowed to edit this file -- only strategies.yaml. Edit by hand, with
+# care; changes take effect on restart.
+
+max_risk_per_trade_pct: 0.01          # 1% of equity, max loss, per trade -- your rule
+max_portfolio_heat_pct: 0.06          # total open risk across all positions, normally
+max_portfolio_heat_pct_high_vix: 0.04 # tighter heat cap when VIX is elevated
+high_vix_threshold: 25
+
+max_daily_loss_pct: 0.03              # realized+unrealized daily loss -> halt new entries today
+max_weekly_loss_pct: 0.06             # halt and require manual review before resuming
+
+max_positions_per_underlying: 1
+max_positions_per_correlated_bucket: 2
+correlated_buckets:
+  us_broad_market: [SPY, XSP, QQQ, IWM]
+
+earnings_blackout_days: 7             # no new positions within N days of an earnings date
+
+profit_target_pct: 0.50               # close at 50% of max credit captured
+stop_loss_multiple: 2.0               # close at 2x credit received as a realized loss
+time_stop_dte: 21                     # close regardless at 21 DTE (gamma risk accelerates)
+
+consecutive_loss_halt: 5              # N losses in a row -> halt, needs manual review
+max_drawdown_halt_pct: 0.15           # NAV drawdown from high-water mark -> full stop
+broker_disconnect_halt_seconds: 60    # broker link down this long during RTH -> alert/flatten
+data_staleness_halt_seconds: 300      # market data older than this -> no new entries

@@ -1,0 +1,9 @@
+# Tradable underlyings and liquidity floors. Keep this list small and liquid; the risk manager
+# and backtest engine both reject anything that fails these floors regardless of strategy signal.
+
+tickers:
+  - SPY
+  - XSP
+
+min_option_open_interest: 100
+max_bid_ask_spread_pct_of_mid: 0.10

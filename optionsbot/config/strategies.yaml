@@ -1,0 +1,30 @@
+# Tunable strategy parameters. This is the surface the Phase 7 learning loop may propose
+# changes to -- always clamped within risk.yaml's limits, always surfaced for your approval,
+# never auto-applied. It never touches risk.yaml.
+
+put_credit_spread:
+  enabled: true
+  target_dte_min: 30
+  target_dte_max: 50
+  short_delta_target: 0.30
+  short_delta_tolerance: 0.05
+  min_iv_rank: 30
+  spread_width: 1        # 1-wide, XSP-friendly for small accounts
+
+iron_condor:
+  enabled: false         # enable once put_credit_spread has a validated walk-forward backtest
+  target_dte_min: 30
+  target_dte_max: 50
+  short_delta_target: 0.16
+  short_delta_tolerance: 0.05
+  min_iv_rank: 50
+  spread_width: 1
+
+wheel:
+  enabled: false         # needs more capital per position (100 shares); disabled by default
+  target_dte_min: 30
+  target_dte_max: 45
+  short_delta_target: 0.30
+  short_delta_tolerance: 0.05
+  min_iv_rank: 0
+  spread_width: 0
