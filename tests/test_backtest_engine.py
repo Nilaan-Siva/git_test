@@ -266,6 +266,40 @@ def test_missing_chains_are_journalled_and_the_run_survives():
     assert result.metrics.trade_count >= 0
 
 
+def test_coverage_exposes_tickers_that_had_no_data(result):
+    """The failure that produced a confident four-trade verdict on a twelve-ticker universe.
+
+    Backfilling one ticker and backtesting twelve yields a perfectly well-formed report --
+    equity curve, win rate, verdict -- computed from a twelfth of the intended universe, with
+    nothing in the numbers indicating it. Missing data is not a rejection, so it never appeared
+    in rejection_counts; the strategy was simply never asked about those names.
+    """
+    assert result.total_days > 0
+    assert result.coverage()["SPY"] > 0.9
+    assert result.starved_tickers() == []
+
+
+def test_a_ticker_with_no_cached_chains_is_flagged_as_starved():
+    class OnlySpy(ChainProvider):
+        def __init__(self, inner):
+            self.inner = inner
+
+        def get_chain(self, underlying: str, as_of: date) -> Chain:
+            if underlying != "SPY":
+                raise DataUnavailableError(f"{underlying} not cached")
+            return self.inner.get_chain(underlying, as_of)
+
+        def get_underlying_price(self, underlying: str, as_of: date) -> Decimal:
+            return self.inner.get_underlying_price(underlying, as_of)
+
+    result = run_backtest(
+        provider=OnlySpy(make_provider(tickers=("SPY", "QQQ"))), tickers=("SPY", "QQQ")
+    )
+    assert result.starved_tickers() == ["QQQ"]
+    assert result.coverage()["QQQ"] == 0.0
+    assert result.coverage()["SPY"] > 0.9
+
+
 def test_a_provider_with_no_data_at_all_produces_an_empty_but_valid_result():
     class DeadProvider(ChainProvider):
         def get_chain(self, underlying: str, as_of: date) -> Chain:

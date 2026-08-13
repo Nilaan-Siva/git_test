@@ -110,9 +110,32 @@ class BacktestResult:
     open_positions: list[Position]
     journal: list[JournalEntry]
     slippage_label: str
+    # ticker -> number of days a chain was actually loaded, and the days attempted.
+    chain_days: dict[str, int] = field(default_factory=dict)
+    total_days: int = 0
 
     def entries_of_kind(self, kind: str) -> list[JournalEntry]:
         return [e for e in self.journal if e.kind == kind]
+
+    def coverage(self) -> dict[str, float]:
+        """Fraction of days each ticker actually had data for, worst first.
+
+        This has to be reported next to every result. A backtest run against a universe of
+        twelve tickers where only one was backfilled produces a perfectly well-formed report --
+        an equity curve, a win rate, a verdict -- computed from a twelfth of the intended
+        universe, and nothing in the numbers says so. Missing data does not appear in
+        `rejection_counts` because it is not a rejection; the strategy was never asked.
+        """
+        if not self.total_days:
+            return {}
+        return dict(
+            sorted(((t, self.chain_days.get(t, 0) / self.total_days) for t in self.chain_days), key=lambda kv: kv[1])
+        )
+
+    def starved_tickers(self, threshold: float = 0.5) -> list[str]:
+        """Tickers with data for less than `threshold` of the window -- results are not about
+        these names, whatever the header says."""
+        return [t for t, frac in self.coverage().items() if frac < threshold]
 
     def rejection_counts(self) -> dict[str, int]:
         """How often each distinct rejection reason fired, most common first.
@@ -162,6 +185,8 @@ class BacktestEngine:
         self._closes: dict[str, list[float]] = {t: [] for t in config.tickers}
         self._iv_history: dict[str, list[float]] = {t: [] for t in config.tickers}
         self._realized_by_day: dict[date, Decimal] = {}
+        self._chain_days: dict[str, int] = {t: 0 for t in config.tickers}
+        self._total_days = 0
         self._realized_by_week: dict[tuple[int, int], Decimal] = {}
 
     # ---- public API ---------------------------------------------------------------------
@@ -194,15 +219,19 @@ class BacktestEngine:
             open_positions=list(self._open),
             journal=list(self._journal),
             slippage_label=self.slippage.label,
+            chain_days=dict(self._chain_days),
+            total_days=self._total_days,
         )
 
     # ---- day steps ----------------------------------------------------------------------
 
     def _load_chains(self, day: date) -> dict[str, Chain]:
+        self._total_days += 1
         chains: dict[str, Chain] = {}
         for ticker in self.config.tickers:
             try:
                 chains[ticker] = self.provider.get_chain(ticker, day)
+                self._chain_days[ticker] = self._chain_days.get(ticker, 0) + 1
             except DataUnavailableError as exc:
                 self._log(day, "data_gap", ticker, f"no chain available: {exc}")
         return chains

@@ -65,6 +65,17 @@ class _NoRemote(ChainProvider):
 
 def report(result: BacktestResult) -> None:
     print(result.metrics.render())
+    starved = result.starved_tickers()
+    if starved:
+        print(
+            f"\n*** DATA COVERAGE WARNING: {len(starved)} of {len(result.chain_days)} tickers had data for\n"
+            f"    less than half the window: {', '.join(starved)}\n"
+            f"    These numbers are NOT a result for the configured universe. Backfill them\n"
+            f"    (scripts/fetch_data.py) or narrow --tickers to what is actually cached. ***"
+        )
+    coverage = result.coverage()
+    if coverage:
+        print("\nChain coverage: " + ", ".join(f"{t} {frac:.0%}" for t, frac in coverage.items()))
     counts = result.rejection_counts()
     if counts:
         print("\nWhy trades didn't happen (top reasons):")
