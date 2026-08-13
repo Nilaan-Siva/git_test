@@ -26,6 +26,11 @@ class RiskConfig(BaseModel):
     max_positions_per_underlying: int = 1
     max_positions_per_correlated_bucket: int = 2
     correlated_buckets: dict[str, list[str]] = Field(default_factory=dict)
+    # When more than one position per underlying is allowed, they must sit on DIFFERENT
+    # expirations. Otherwise "laddering" is just doubling the same bet: two spreads on the same
+    # expiry share one price path and lose together, which is concentration wearing the costume
+    # of diversification.
+    require_distinct_expirations: bool = True
 
     earnings_blackout_days: int = 7
 

@@ -94,6 +94,29 @@ def check_per_underlying_limit(intent: OrderIntent, portfolio: PortfolioState, c
     return None
 
 
+def check_distinct_expirations(intent: OrderIntent, portfolio: PortfolioState, config: RiskConfig) -> Optional[str]:
+    """Reject a second position on an expiration this underlying already holds.
+
+    This is what makes `max_positions_per_underlying > 1` a ladder rather than a doubled bet.
+    Two spreads on the same underlying AND the same expiration share a single price path: they
+    win together and, more to the point, they lose together, so the account carries twice the
+    risk of one position while the per-trade limit reports that each is within bounds.
+    Staggering expirations is the entire reason to allow more than one position at all.
+    """
+    if not config.require_distinct_expirations:
+        return None
+    proposed = {leg.contract.expiration for leg in intent.spread.legs}
+    for position in positions_for_underlying(portfolio.open_positions, intent.spread.underlying):
+        held = {leg.contract.expiration for leg in position.spread.legs}
+        clash = held & proposed
+        if clash:
+            return (
+                f"duplicate_expiration: already hold {intent.spread.underlying} expiring "
+                f"{sorted(clash)[0].isoformat()}"
+            )
+    return None
+
+
 def check_correlated_bucket_limit(intent: OrderIntent, portfolio: PortfolioState, config: RiskConfig) -> Optional[str]:
     underlying = intent.spread.underlying.upper()
     for bucket_name, members in config.correlated_buckets.items():

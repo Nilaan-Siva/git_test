@@ -1,9 +1,35 @@
-# Tradable underlyings and liquidity floors. Keep this list small and liquid; the risk manager
-# and backtest engine both reject anything that fails these floors regardless of strategy signal.
+# Tradable underlyings and liquidity floors. The risk manager and backtest engine both reject
+# anything failing these floors regardless of strategy signal.
+#
+# Twelve names, not two. The trade rate is bounded by how many *independent* signals exist on a
+# given day, so a wider universe -- not looser filters -- is what raises it. Every name here is
+# an ETF with genuinely liquid listed options; single stocks are deliberately absent, because
+# they carry earnings gap risk that a defined-risk credit spread is badly suited to.
+#
+# What keeps this from becoming one giant S&P bet is risk.yaml's correlated_buckets: SPY, QQQ,
+# IWM, DIA, XSP and XLK all count against a single 4-position budget. The diversification that
+# actually matters comes from the non-equity names.
 
 tickers:
+  # US broad market (one correlated bucket)
   - SPY
-  - XSP
+  - QQQ
+  - IWM
+  - DIA
+  # Technology -- correlated with QQQ, bucketed with it
+  - XLK
+  # Rates
+  - TLT
+  # Precious metals
+  - GLD
+  - SLV
+  # Energy
+  - XLE
+  - USO
+  # Financials
+  - XLF
+  # International equity
+  - EEM
 
 min_option_open_interest: 100
 max_bid_ask_spread_pct_of_mid: 0.10

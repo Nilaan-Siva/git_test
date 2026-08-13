@@ -84,6 +84,9 @@ def approve(intent: OrderIntent, portfolio: PortfolioState, config: RiskConfig, 
     reason = limits.check_per_underlying_limit(intent, portfolio, config)
     if reason:
         return Decision(approved=False, reason=reason)
+    reason = limits.check_distinct_expirations(intent, portfolio, config)
+    if reason:
+        return Decision(approved=False, reason=reason)
     reason = limits.check_correlated_bucket_limit(intent, portfolio, config)
     if reason:
         return Decision(approved=False, reason=reason)

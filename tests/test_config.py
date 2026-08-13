@@ -12,10 +12,56 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "optionsbot" / "config"
 
 def test_load_shipped_risk_config():
     cfg = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
-    assert cfg.max_risk_per_trade_pct == Decimal("0.01")
-    assert cfg.max_positions_per_underlying == 1
     assert "us_broad_market" in cfg.correlated_buckets
     assert "SPY" in cfg.correlated_buckets["us_broad_market"]
+
+
+def test_shipped_per_trade_risk_stays_within_the_one_percent_ceiling():
+    """The account rule is "never more than 1% per trade". It is a ceiling, not a target, so
+    the shipped value may be lower -- but it must never drift above, whatever else is tuned."""
+    cfg = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
+    assert 0 < cfg.max_risk_per_trade_pct <= Decimal("0.01")
+
+
+def test_shipped_config_ladders_across_distinct_expirations():
+    """Allowing several positions per underlying is only diversification if they sit on
+    different expirations; otherwise it is one bet held twice."""
+    cfg = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
+    if cfg.max_positions_per_underlying > 1:
+        assert cfg.require_distinct_expirations is True
+
+
+def test_every_tradable_ticker_belongs_to_a_correlated_bucket():
+    """An unbucketed ticker silently escapes the correlation limit -- it can be held alongside
+    every other name no matter how tightly it tracks them. With a twelve-name universe that is
+    exactly how a portfolio becomes one leveraged S&P bet while every individual check passes.
+    """
+    risk = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
+    universe = load_yaml_config(CONFIG_DIR / "universe.yaml", UniverseConfig)
+    bucketed = {t.upper() for members in risk.correlated_buckets.values() for t in members}
+    unbucketed = {t.upper() for t in universe.tickers} - bucketed
+    assert not unbucketed, f"tickers with no correlated bucket: {sorted(unbucketed)}"
+
+
+def test_concurrent_position_budget_is_bounded_by_heat_not_position_counts():
+    """Heat should be the binding constraint, with the position counts as secondary guards.
+    If the count limits bind first, the 6% cap never actually governs anything and tuning it
+    has no effect -- a confusing failure mode to debug later."""
+    risk = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
+    universe = load_yaml_config(CONFIG_DIR / "universe.yaml", UniverseConfig)
+
+    slots_by_counts = 0
+    for members in risk.correlated_buckets.values():
+        tradable = [t for t in members if t.upper() in {u.upper() for u in universe.tickers}]
+        slots_by_counts += min(
+            len(tradable) * risk.max_positions_per_underlying,
+            risk.max_positions_per_correlated_bucket,
+        )
+    slots_by_heat = int(risk.max_portfolio_heat_pct / risk.max_risk_per_trade_pct)
+    assert slots_by_counts >= slots_by_heat, (
+        f"position counts allow only {slots_by_counts} concurrent positions but heat allows "
+        f"{slots_by_heat}; the heat cap is dead config"
+    )
 
 
 def test_load_shipped_strategies_config():

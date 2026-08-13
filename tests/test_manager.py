@@ -193,6 +193,61 @@ def test_approve_rejects_second_position_same_underlying():
     assert decision.approved is False and "per_underlying_limit" in decision.reason
 
 
+def test_approve_rejects_a_second_position_on_an_expiration_already_held():
+    """Laddering must spread across expirations. Two spreads on the same underlying and the
+    same expiry ride one price path -- they lose together, so the account carries double the
+    risk while each trade individually reports as within its limit."""
+    laddering = DEFAULT_CONFIG.model_copy(update={"max_positions_per_underlying": 2})
+    portfolio = make_portfolio(account=make_account(equity="100000"), open_positions=[make_position("SPY")])
+    # make_intent() builds the same 2026-09-18 expiration that make_position() holds
+    decision = approve(make_intent("SPY"), portfolio, laddering, now=NOW)
+    assert decision.approved is False and "duplicate_expiration" in decision.reason
+
+
+def test_approve_allows_a_second_position_on_a_different_expiration():
+    laddering = DEFAULT_CONFIG.model_copy(update={"max_positions_per_underlying": 2})
+    portfolio = make_portfolio(account=make_account(equity="100000"), open_positions=[make_position("SPY")])
+
+    later = OrderIntent(
+        strategy=StrategyName.PUT_CREDIT_SPREAD,
+        spread=Spread(
+            strategy=StrategyName.PUT_CREDIT_SPREAD,
+            underlying="SPY",
+            legs=[
+                Leg(
+                    contract=OptionContract(underlying="SPY", expiration=date(2026, 10, 16), strike=Decimal("450"), right=Right.PUT),
+                    action=Action.SELL_TO_OPEN,
+                ),
+                Leg(
+                    contract=OptionContract(underlying="SPY", expiration=date(2026, 10, 16), strike=Decimal("445"), right=Right.PUT),
+                    action=Action.BUY_TO_OPEN,
+                ),
+            ],
+        ),
+        limit_price_per_share=Decimal("-1.50"),
+        max_loss_per_contract=Decimal("350"),
+        max_profit_per_contract=Decimal("150"),
+    )
+    decision = approve(later, portfolio, laddering, now=NOW)
+    assert decision.approved is True
+
+
+def test_distinct_expiration_rule_can_be_switched_off():
+    permissive = DEFAULT_CONFIG.model_copy(
+        update={"max_positions_per_underlying": 2, "require_distinct_expirations": False}
+    )
+    portfolio = make_portfolio(account=make_account(equity="100000"), open_positions=[make_position("SPY")])
+    assert approve(make_intent("SPY"), portfolio, permissive, now=NOW).approved is True
+
+
+def test_per_underlying_limit_still_binds_before_the_expiration_rule():
+    """With the limit at 1, a second position is refused for being a second position at all --
+    the expiration rule is an additional constraint, not a replacement."""
+    portfolio = make_portfolio(account=make_account(equity="100000"), open_positions=[make_position("SPY")])
+    decision = approve(make_intent("SPY"), portfolio, DEFAULT_CONFIG, now=NOW)
+    assert decision.approved is False and "per_underlying_limit" in decision.reason
+
+
 def test_approve_rejects_at_correlated_bucket_cap():
     portfolio = make_portfolio(
         account=make_account(equity="100000"),
