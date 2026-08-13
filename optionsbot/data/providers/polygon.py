@@ -56,7 +56,13 @@ from optionsbot.data.pricing import (
 from optionsbot.data.providers.base import ChainProvider, DataUnavailableError
 
 POLYGON_BASE_URL = "https://api.polygon.io"
+# What the plan documents.
 FREE_TIER_CALLS_PER_MINUTE = 5
+# What we actually pace at. The server rejected requests even at exactly 5/min -- its window
+# is not the client's, and a rejected request still counts -- so one call of headroom is the
+# difference between a steady backfill and a retry storm. Estimates must use THIS number, not
+# the documented one, or every projection runs ~25% optimistic.
+DEFAULT_THROTTLE_CALLS_PER_MINUTE = FREE_TIER_CALLS_PER_MINUTE - 1
 
 
 class HttpClient(Protocol):
@@ -77,10 +83,7 @@ class _RequestsHttpClient:
 
     api_key: str
     timeout_seconds: float = 20.0
-    # One below the documented limit, on purpose. Pacing at exactly 5/min still drew 429s: the
-    # server's window is not the same window the client measures, and a rejected request still
-    # counts against it. Giving up a call a minute is far cheaper than a retry storm.
-    calls_per_minute: int = FREE_TIER_CALLS_PER_MINUTE - 1
+    calls_per_minute: int = DEFAULT_THROTTLE_CALLS_PER_MINUTE
     max_retries: int = 6
     _call_times: list[float] = field(default_factory=list)
 

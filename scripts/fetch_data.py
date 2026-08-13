@@ -3,28 +3,25 @@
 
 Requires OPTIONSBOT_POLYGON_API_KEY in .env.
 
-**Read the budget before running this.** The free tier allows 5 API calls per minute, which is
-the constraint that shapes everything here. The provider fetches each option contract's entire
-price history in a single call (see optionsbot/data/providers/polygon.py), so the cost scales
-with the number of *contracts*, not contracts x days:
+**Read the budget before running this.** The free tier documents 5 API calls per minute; we
+pace at 4, because at exactly 5 the server still rejects requests. Every projection must use
+the pacing rate, not the documented one -- using 5 made every estimate here run 25% optimistic,
+which is how a "2.3 hour" job turned out to take nearly three. The provider fetches each
+contract's entire price history in one call (see optionsbot/data/providers/polygon.py), so the
+cost scales with the number of *contracts*, not contracts x days:
 
     calls ~= 1 + expirations * rights * (1 + strikes_per_expiration)
 
-Both halves of that product matter, and `rights` is the one that is easy to forget: fetching
-puts *and* calls doubles every number below. At 5 calls/min, with monthly expirations and a
-5-point strike grid:
+`rights` is the easy factor of two to forget: fetching puts *and* calls doubles everything. At
+4 calls/min with monthly expirations, on a strike grid matching the configured spread width:
 
-    SPY, 18 months, puts only                                 ~1.4 hours
-    SPY, 18 months, puts and calls                            ~2.7 hours
-    4 underlyings, 18 months, puts only                       ~5.5 hours
-    12 underlyings, 18 months, puts and calls                 ~32 hours
+    SPY, 18 months, puts only                                 ~2.9 hours
+    SPY, 18 months, puts and calls                            ~5.7 hours
+    4 underlyings, 18 months, puts only                       ~11 hours
 
 Every contract's bars are cached individually under <cache_dir>/bars, so an interrupted run
-replays from disk in seconds and only fetches what it never got to. Always start with
---dry-run; it prints the estimate and exits. Use --strike-step 5 unless you
-specifically need $1 strikes, and --puts-only unless you intend to trade iron condors, which are
-disabled by default. Progress is written to the cache as it goes, so an interrupted run resumes
-where it stopped rather than starting over.
+replays from disk in seconds and only fetches what it never reached. Always start with
+--dry-run. Use --puts-only unless you intend to trade iron condors, which ship disabled.
 
 Usage:
     python scripts/fetch_data.py --dry-run --tickers SPY --months 18      # estimate first
@@ -44,7 +41,7 @@ from optionsbot.core.enums import Right
 from optionsbot.data.cache import ParquetChainCache
 from optionsbot.data.providers.base import DataUnavailableError
 from optionsbot.data.providers.polygon import (
-    FREE_TIER_CALLS_PER_MINUTE,
+    DEFAULT_THROTTLE_CALLS_PER_MINUTE,
     PolygonProvider,
     monthly_expirations,
 )
@@ -129,13 +126,13 @@ def main() -> int:
     strikes_guess = max(1, int((0.15 * 700) / float(strike_step))) if strike_step else 100
     per_ticker = estimate_calls(len(expirations), strikes_guess, n_rights)
     total = per_ticker * len(tickers)
-    minutes = total / FREE_TIER_CALLS_PER_MINUTE
+    minutes = total / DEFAULT_THROTTLE_CALLS_PER_MINUTE
 
     logger.info(
         f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
         f"strike step {strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
     )
-    logger.info(f"estimated ~{total} API calls at {FREE_TIER_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
+    logger.info(f"estimated ~{total} API calls at {DEFAULT_THROTTLE_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
     if args.dry_run:
         return 0
 
