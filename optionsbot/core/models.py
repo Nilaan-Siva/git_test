@@ -328,3 +328,23 @@ class AccountSnapshot(BaseModel):
     equity: Decimal
     cash: Decimal
     buying_power: Decimal
+
+
+class PortfolioState(BaseModel):
+    """Everything the risk manager needs to evaluate a proposed trade, gathered into one
+    snapshot. Built and kept current by portfolio/tracker.py (Phase 6); the risk manager only
+    ever reads it -- it has no state of its own (see risk/manager.py's module docstring for the
+    consequence of that: callers must refresh this between sequential approve() calls within
+    the same cycle, or heat/limit checks will not see each other's in-flight orders).
+    """
+
+    account: AccountSnapshot
+    open_positions: list[Position] = Field(default_factory=list)
+    high_water_mark_equity: Decimal
+    realized_pnl_today: Decimal = Decimal("0")
+    realized_pnl_this_week: Decimal = Decimal("0")
+    unrealized_pnl: Decimal = Decimal("0")
+    consecutive_losses: int = 0
+    last_data_update: Optional[datetime] = None
+    last_broker_heartbeat: Optional[datetime] = None
+    vix_level: Optional[Decimal] = None
