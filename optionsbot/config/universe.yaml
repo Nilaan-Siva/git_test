@@ -1,35 +1,48 @@
 # Tradable underlyings and liquidity floors. The risk manager and backtest engine both reject
 # anything failing these floors regardless of strategy signal.
 #
-# Twelve names, not two. The trade rate is bounded by how many *independent* signals exist on a
-# given day, so a wider universe -- not looser filters -- is what raises it. Every name here is
-# an ETF with genuinely liquid listed options; single stocks are deliberately absent, because
-# they carry earnings gap risk that a defined-risk credit spread is badly suited to.
+# WHY THIS LIST IS SHORT, AND WHY EVERY NAME IS EXPENSIVE
 #
-# What keeps this from becoming one giant S&P bet is risk.yaml's correlated_buckets: SPY, QQQ,
-# IWM, DIA, XSP and XLK all count against a single 4-position budget. The diversification that
-# actually matters comes from the non-equity names.
+# Spread width is configured in points, but what a point *means* depends on the underlying's
+# price. Measured against real prices on 2026-08-12, a 3-point spread is:
+#
+#     SPY  $772   0.39%   fine
+#     QQQ  $724   0.41%   fine
+#     DIA  $537   0.56%   fine
+#     GLD  $405   0.74%   fine
+#     IWM  $303   0.99%   fine
+#     XLK  $189   1.59%   coarse, borderline
+#     USO  $127   2.36%   too wide
+#     EEM   $66   4.51%   far too wide
+#     XLE   $61   4.92%   far too wide
+#     XLF   $58   5.18%   far too wide
+#     SLV   $59   5.08%   far too wide
+#     TLT   $82   3.65%   far too wide
+#
+# On the cheap names the protective leg sits so far out of the money that it is nearly
+# worthless, and the position behaves like a naked short put rather than a spread. Max loss is
+# still capped, so no risk limit objects -- it simply is not the trade the strategy intends. A
+# live check confirmed it: TLT returned a single usable strike whose delta missed the target.
+#
+# Narrowing the width for the cheap names does not rescue them either. A $1-wide spread on TLT
+# collects around $22, against $2.60 of round-trip commission -- roughly 12% of the profit gone
+# in fees. Cheap underlyings and defined-risk spreads are a poor fit at any account size.
+#
+# So the universe is high-priced ETFs only. Six names, deliberately: the portfolio heat cap
+# allows six concurrent positions, and these six supply exactly that many slots. Adding cheap
+# tickers would add backfill hours and no trades.
+#
+# strategy/filters.check_width_suits_underlying enforces this at runtime, so a name that drifts
+# too cheap stands itself down and says so in the journal rather than trading badly.
 
 tickers:
-  # US broad market (one correlated bucket)
-  - SPY
-  - QQQ
-  - IWM
-  - DIA
-  # Technology -- correlated with QQQ, bucketed with it
-  - XLK
-  # Rates
-  - TLT
-  # Precious metals
-  - GLD
-  - SLV
-  # Energy
-  - XLE
-  - USO
-  # Financials
-  - XLF
-  # International equity
-  - EEM
+  - SPY   # S&P 500
+  - QQQ   # Nasdaq 100
+  - DIA   # Dow 30
+  - IWM   # Russell 2000 small caps
+  - XLK   # US technology sector
+  - GLD   # gold -- the only name here uncorrelated with equities
 
 min_option_open_interest: 100
+min_option_volume_when_oi_unknown: 10
 max_bid_ask_spread_pct_of_mid: 0.10

@@ -32,6 +32,9 @@ max_positions_per_correlated_bucket: 4
 # Things that move together are one bet, however many tickers they span. These groupings are
 # what let the universe grow to a dozen names without the account quietly becoming a single
 # leveraged position on the S&P.
+# Buckets cover more names than universe.yaml trades, on purpose: the extra entries cost
+# nothing and mean a ticker added later is already correctly grouped rather than silently
+# escaping the correlation limit.
 correlated_buckets:
   us_broad_market: [SPY, XSP, QQQ, IWM, DIA, XLK]  # XLK is ~half the Nasdaq by weight
   international_equity: [EFA, EEM]

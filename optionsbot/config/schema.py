@@ -66,6 +66,12 @@ class StrategyParams(BaseModel):
     # the setup this strategy actually wants -- sell premium into a pullback *within* an
     # ongoing uptrend -- and stands down only when the longer trend has genuinely broken.
     trend_sma_period: int = 200
+    # A spread width is a number of points, but what it *means* depends entirely on the
+    # underlying's price. Three points is 0.4% of SPY at $772 and 5% of XLF at $58 -- the same
+    # setting produces a tight, high-probability spread on one and something close to a naked
+    # short put on the other. Above this fraction of spot the structure is no longer the trade
+    # the strategy thinks it is placing, so it stands down and says so.
+    max_spread_width_pct_of_spot: Decimal = Decimal("0.02")
 
 
 class StrategiesConfig(BaseModel):

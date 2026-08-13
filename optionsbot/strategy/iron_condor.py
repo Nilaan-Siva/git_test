@@ -51,6 +51,9 @@ class IronCondor(Strategy):
             return []
 
         for reason in (
+            filters.check_width_suits_underlying(
+                self.params.spread_width, ctx.chain.underlying_price, self.params
+            ),
             filters.check_iv_rank(ctx.iv_rank, self.params),
             filters.check_earnings_blackout(ctx.as_of, ctx.earnings_dates, ctx.earnings_blackout_days),
         ):

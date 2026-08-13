@@ -35,7 +35,7 @@ expensive, and most days they aren't. See [[How The Bot Decides]].
 
 ## Current setup
 
-- **Trading**: SPY, QQQ, IWM, DIA, XLK, TLT, GLD, SLV, XLE, USO, XLF, EEM
+- **Trading**: SPY, QQQ, DIA, IWM, XLK, GLD
 - **Risk per trade**: 1.0% of the account
 - **Most at risk at once**: 6%
 - **Status**: still in testing. No real money is connected, and none will be until it proves

@@ -95,6 +95,31 @@ def check_legs_liquidity(quotes: Sequence[OptionQuote], universe: UniverseConfig
     return None
 
 
+def check_width_suits_underlying(
+    spread_width: Decimal, underlying_price: Decimal, params: StrategyParams
+) -> Optional[str]:
+    """Reject a spread width that is too wide relative to the underlying's price.
+
+    Width is configured in points, but its meaning is a fraction of spot. At $772, a 3-point
+    spread on SPY spans 0.4% of the price -- a tight structure whose long leg genuinely caps the
+    risk close by. The same 3 points on XLF at $58 spans 5%, far enough out that the protective
+    leg is nearly worthless and the position behaves like a naked short put wearing a spread's
+    name. Max loss is still bounded, so no risk limit catches it; it simply is not the trade.
+
+    This fires before anything else looks at the chain, so the journal says "this ticker does not
+    suit the configured width" rather than burying it in a vague strike-selection failure.
+    """
+    if underlying_price <= 0:
+        return "invalid_underlying_price"
+    fraction = spread_width / underlying_price
+    if fraction > params.max_spread_width_pct_of_spot:
+        return (
+            f"width_unsuitable_for_underlying: {spread_width}pt is {fraction:.1%} of "
+            f"{underlying_price} (cap {params.max_spread_width_pct_of_spot:.1%})"
+        )
+    return None
+
+
 def check_not_downtrend(closes: Sequence[float], *, period: int = 200) -> Optional[str]:
     """Don't sell puts into a market whose longer-term trend has broken.
 

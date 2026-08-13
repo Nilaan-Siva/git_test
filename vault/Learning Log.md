@@ -17,3 +17,9 @@ Appended to every time the vault is rebuilt — newest at the bottom. This is th
 
 - Risk per trade: **1.0%** · [[Width]]: **3pt** · [[IV Rank]] floor: **30** · [[DTE]] window: **30–50**
 - Universe: 12 tickers (SPY, QQQ, IWM, DIA, XLK, TLT, GLD, SLV, XLE, USO, XLF, EEM)
+
+## 2026-08-13 20:50 UTC
+
+- Risk per trade: **1.0%** · [[Width]]: **3pt** · [[IV Rank]] floor: **30** · [[DTE]] window: **30–50**
+- Universe: 6 tickers (SPY, QQQ, DIA, IWM, XLK, GLD)
+- Last test: **2 trades**, 100% won, expectancy **$+46.90**, ended **$25,094**

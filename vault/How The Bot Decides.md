@@ -54,6 +54,6 @@ It sells the spread, and from then on watches daily for one of three exits: the
 
 ## Currently trading
 
-SPY, QQQ, IWM, DIA, XLK, TLT, GLD, SLV, XLE, USO, XLF, EEM
+SPY, QQQ, DIA, IWM, XLK, GLD
 
 [[Iron Condor]] is available but switched off until the simpler trade proves itself.

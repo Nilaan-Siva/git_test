@@ -241,8 +241,38 @@ def test_rejects_when_the_credit_would_exceed_the_width():
     assert any("inconsistent_pricing" in note for note in ctx.notes)
 
 
+def test_rejects_a_width_too_wide_for_the_underlying():
+    """A 3-point spread is 0.4% of SPY at $772 and 5% of XLF at $58 -- the same setting, but on
+    the cheap name the protective leg sits so far out that the position is closer to a naked
+    short put than a spread. Max loss is still bounded, so no risk limit catches it; the
+    strategy has to notice that the structure is not the one it means to place."""
+    params = StrategyParams(spread_width=Decimal("3"))
+    ctx = make_context(default_put_chain(), params=params, spot=Decimal("58"))
+    assert PutCreditSpread(params).propose(ctx) == []
+    assert any("width_unsuitable_for_underlying" in note for note in ctx.notes)
+
+
+def test_accepts_the_same_width_on_a_high_priced_underlying():
+    """The mirror of the test above: 2 points is 0.26% of a $772 underlying, well inside the
+    cap, so the identical structure is allowed through."""
+    params = StrategyParams(spread_width=Decimal("2"))
+    ctx = make_context(default_put_chain(), params=params, spot=Decimal("772"))
+    assert len(PutCreditSpread(params).propose(ctx)) == 1
+
+
+def test_rejects_that_same_width_on_a_cheap_underlying():
+    params = StrategyParams(spread_width=Decimal("2"))
+    ctx = make_context(default_put_chain(), params=params, spot=Decimal("58"))
+    assert PutCreditSpread(params).propose(ctx) == []
+    assert any("width_unsuitable_for_underlying" in note for note in ctx.notes)
+
+
 def test_rejects_a_long_strike_at_or_below_zero():
-    params = StrategyParams(spread_width=Decimal("500"))
+    """Only reachable with the width-vs-spot guard relaxed: at the 2% default, a width large
+    enough to drive the long strike below zero is rejected earlier by
+    `test_rejects_a_width_too_wide_for_the_underlying`. Kept so the arithmetic guard itself
+    stays covered if that cap is ever loosened."""
+    params = StrategyParams(spread_width=Decimal("500"), max_spread_width_pct_of_spot=Decimal("10"))
     ctx = make_context(default_put_chain(), params=params)
     assert PutCreditSpread(params).propose(ctx) == []
     assert any("invalid_long_strike" in note for note in ctx.notes)
@@ -464,7 +494,8 @@ def test_iron_condor_rejects_an_impossible_credit():
 
 
 def test_iron_condor_rejects_a_put_wing_priced_below_zero_strike():
-    params = condor_params(spread_width=Decimal("500"))
+    # Width guard relaxed for the same reason as the put-spread equivalent above.
+    params = condor_params(spread_width=Decimal("500"), max_spread_width_pct_of_spot=Decimal("10"))
     ctx = make_context(condor_chain(), params=params)
     assert IronCondor(params).propose(ctx) == []
     assert any("invalid_long_strike" in note for note in ctx.notes)
