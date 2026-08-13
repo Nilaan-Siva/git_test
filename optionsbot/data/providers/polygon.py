@@ -276,11 +276,16 @@ class PolygonProvider(ChainProvider):
         dte_min: int = 25,
         dte_max: int = 60,
         expirations: Optional[list[date]] = None,
+        rights: Optional[tuple[Right, ...]] = None,
     ) -> Iterator[Chain]:
         """Yield one Chain per trading day in [start, end], fetching each contract only once.
 
-        Call budget is roughly `1 + expirations * (1 + strikes_per_expiration)`, independent of
-        how many days the window covers -- which is the whole point.
+        Call budget is roughly `1 + expirations * (1 + strikes * rights)`, independent of how
+        many days the window covers -- which is the whole point.
+
+        `rights` is the other half of the budget, and it is easy to overlook: leaving it None
+        fetches puts *and* calls, doubling every estimate. A put-credit-spread-only run should
+        pass `(Right.PUT,)` and halve its backfill time; an iron condor genuinely needs both.
         """
         underlying = underlying.upper()
         spot_bars = self.underlying_bars(underlying, start, end)
@@ -300,9 +305,17 @@ class PolygonProvider(ChainProvider):
         # contract ticker -> (contract metadata, {date: bar})
         loaded: list[tuple[dict[str, Any], dict[date, dict[str, Any]]]] = []
         for expiration in expirations:
-            contracts = self.list_contracts(
-                underlying, expiration=expiration, strike_min=strike_min, strike_max=strike_max
-            )
+            contracts: list[dict[str, Any]] = []
+            for right in rights or (None,):
+                contracts.extend(
+                    self.list_contracts(
+                        underlying,
+                        expiration=expiration,
+                        strike_min=strike_min,
+                        strike_max=strike_max,
+                        right=right,
+                    )
+                )
             for raw in contracts:
                 strike = raw.get("strike_price")
                 if strike is None:

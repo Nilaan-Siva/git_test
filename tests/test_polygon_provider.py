@@ -248,6 +248,39 @@ def test_build_chains_fetches_each_contract_exactly_once_regardless_of_window_le
     assert len(option_calls) == 2  # ...from one call per contract, not per contract per day
 
 
+def test_rights_filter_halves_the_listing_calls():
+    """The factor-of-two that made the first live run blow its time budget.
+
+    Leaving `rights` unset fetches puts and calls, doubling every backfill estimate. A
+    put-credit-spread run only needs puts, and at 5 calls/minute that difference is hours.
+    """
+
+    class Counting(FakeHttpClient):
+        def get(self, url, params):
+            self.calls.append((url, params))
+            if "reference/options/contracts" in url:
+                return {"results": [contract(700)]}
+            if "aggs/ticker/O:" in url:
+                return {"results": [bar(JUN10, 8.50)]}
+            return {"results": [bar(JUN10, 725.43)]}
+
+    both = Counting({})
+    PolygonProvider("key", client=both).build_chains(
+        "SPY", date(2026, 6, 10), date(2026, 6, 10), expirations=[date(2026, 7, 17)]
+    ).__next__()
+
+    puts = Counting({})
+    list(
+        PolygonProvider("key", client=puts).build_chains(
+            "SPY", date(2026, 6, 10), date(2026, 6, 10), expirations=[date(2026, 7, 17)], rights=(Right.PUT,)
+        )
+    )
+
+    listing = lambda c: [p for u, p in c.calls if "reference/options/contracts" in u]
+    assert len(listing(both)) == 1 and "contract_type" not in listing(both)[0]
+    assert len(listing(puts)) == 1 and listing(puts)[0]["contract_type"] == "put"
+
+
 def test_build_chains_raises_when_the_underlying_has_no_bars():
     client = make_client(**{"aggs/ticker/SPY": {"results": []}})
     provider = PolygonProvider("key", client=client)

@@ -8,22 +8,25 @@ the constraint that shapes everything here. The provider fetches each option con
 price history in a single call (see optionsbot/data/providers/polygon.py), so the cost scales
 with the number of *contracts*, not contracts x days:
 
-    calls ~= 1 + expirations * (1 + strikes_per_expiration)
+    calls ~= 1 + expirations * rights * (1 + strikes_per_expiration)
 
-At 5/min that is roughly:
+Both halves of that product matter, and `rights` is the one that is easy to forget: fetching
+puts *and* calls doubles every number below. At 5 calls/min, with monthly expirations and a
+5-point strike grid:
 
-    SPY, 6 months, monthly expirations, 5-point strike grid   ~15 min
-    SPY, 18 months (6 backtest + 12 warmup), 5-point grid     ~40 min
-    4 underlyings, 18 months, 5-point grid                    ~3 hours
-    12 underlyings, 18 months, 1-point grid                   ~30+ hours
+    SPY, 18 months, puts only                                 ~1.4 hours
+    SPY, 18 months, puts and calls                            ~2.7 hours
+    4 underlyings, 18 months, puts only                       ~5.5 hours
+    12 underlyings, 18 months, puts and calls                 ~32 hours
 
-Use --strike-step 5 unless you specifically need $1 strikes; it cuts the budget roughly
-fivefold, and a 5-wide spread never looks at the intervening strikes anyway. Progress is written
-to the cache as it goes, so an interrupted run resumes without refetching.
+Always start with --dry-run; it prints the estimate and exits. Use --strike-step 5 unless you
+specifically need $1 strikes, and --puts-only unless you intend to trade iron condors, which are
+disabled by default. Progress is written to the cache as it goes, so an interrupted run resumes
+where it stopped rather than starting over.
 
 Usage:
-    python scripts/fetch_data.py --tickers SPY --months 18 --strike-step 5
-    python scripts/fetch_data.py --dry-run --tickers SPY QQQ --months 18   # just the estimate
+    python scripts/fetch_data.py --dry-run --tickers SPY --months 18      # estimate first
+    python scripts/fetch_data.py --tickers SPY --months 18 --puts-only
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ from decimal import Decimal
 from optionsbot.config.loader import load_yaml_config
 from optionsbot.config.schema import UniverseConfig
 from optionsbot.config.settings import CONFIG_DIR, get_settings
+from optionsbot.core.enums import Right
 from optionsbot.data.cache import ParquetChainCache
 from optionsbot.data.providers.base import DataUnavailableError
 from optionsbot.data.providers.polygon import (
@@ -47,8 +51,15 @@ from optionsbot.ops.logging import configure_logging, get_logger
 logger = get_logger(__name__)
 
 
-def estimate_calls(n_expirations: int, strikes_per_expiration: int) -> int:
-    return 1 + n_expirations * (1 + strikes_per_expiration)
+def estimate_calls(n_expirations: int, strikes_per_expiration: int, n_rights: int) -> int:
+    """Contracts, not contract-days -- and both rights, which is the easy factor-of-two to miss.
+
+    One listing call per (expiration, right), then one aggregates call per contract covering the
+    entire window.
+    """
+    listing = n_expirations * n_rights
+    contracts = n_expirations * strikes_per_expiration * n_rights
+    return 1 + listing + contracts
 
 
 def main() -> int:
@@ -56,6 +67,11 @@ def main() -> int:
     parser.add_argument("--months", type=int, default=18, help="trailing months to backfill (backtest + warmup)")
     parser.add_argument("--tickers", nargs="*", default=None, help="override universe.yaml")
     parser.add_argument("--strike-step", type=Decimal, default=Decimal("5"), help="keep only strikes on this grid")
+    parser.add_argument(
+        "--puts-only",
+        action="store_true",
+        help="fetch puts only -- halves the backfill; enough for put credit spreads, not condors",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the API-call estimate and exit")
     parser.add_argument("--force", action="store_true", help="refetch days already cached")
     args = parser.parse_args()
@@ -80,15 +96,17 @@ def main() -> int:
         start = earliest
 
     expirations = monthly_expirations(start + timedelta(days=25), end + timedelta(days=60))
+    rights = (Right.PUT,) if args.puts_only else None
+    n_rights = 1 if args.puts_only else 2
     # A 12%-below-to-3%-above band on a 5-point grid over a ~700 underlying is ~21 strikes.
     strikes_guess = int((0.15 * 700) / float(args.strike_step)) if args.strike_step else 100
-    per_ticker = estimate_calls(len(expirations), strikes_guess)
+    per_ticker = estimate_calls(len(expirations), strikes_guess, n_rights)
     total = per_ticker * len(tickers)
     minutes = total / FREE_TIER_CALLS_PER_MINUTE
 
     logger.info(
         f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
-        f"strike step {args.strike_step}"
+        f"strike step {args.strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
     )
     logger.info(f"estimated ~{total} API calls at {FREE_TIER_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
     if args.dry_run:
@@ -101,7 +119,7 @@ def main() -> int:
     for ticker in tickers:
         logger.info(f"--- {ticker} ---")
         try:
-            for chain in provider.build_chains(ticker, start, end, expirations=expirations):
+            for chain in provider.build_chains(ticker, start, end, expirations=expirations, rights=rights):
                 if not args.force and cache.has(ticker, chain.as_of):
                     skipped += 1
                     continue
