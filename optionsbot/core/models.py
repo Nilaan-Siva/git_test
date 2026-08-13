@@ -213,6 +213,70 @@ class Fill(BaseModel):
     commission: Decimal = Decimal("0")
 
 
+class OptionQuote(BaseModel):
+    """A point-in-time market quote for one option contract, as returned by a ChainProvider.
+
+    bid/ask/last are per-share prices in ordinary market-quote terms (NOT the cash-flow-to-
+    trader convention used elsewhere in this module -- there's no "trader" yet, just a quote).
+    Any field a provider couldn't supply (e.g. historical bid/ask on a free data tier) is None
+    rather than a fabricated number; callers must handle that explicitly.
+    """
+
+    contract: OptionContract
+    bid: Optional[Decimal] = None
+    ask: Optional[Decimal] = None
+    last: Optional[Decimal] = None
+    volume: int = 0
+    open_interest: int = 0
+    implied_volatility: Optional[Decimal] = None
+    delta: Optional[Decimal] = None
+    gamma: Optional[Decimal] = None
+    theta: Optional[Decimal] = None
+    vega: Optional[Decimal] = None
+
+    @property
+    def mid(self) -> Optional[Decimal]:
+        if self.bid is None or self.ask is None:
+            return None
+        return (self.bid + self.ask) / 2
+
+    @property
+    def spread_pct_of_mid(self) -> Optional[Decimal]:
+        """Bid-ask width as a fraction of the mid price. None if quotes or mid are unavailable."""
+        m = self.mid
+        if m is None or m == 0 or self.bid is None or self.ask is None:
+            return None
+        return (self.ask - self.bid) / m
+
+
+class Chain(BaseModel):
+    """A full options-chain snapshot for one underlying at one point in time."""
+
+    underlying: str
+    as_of: date
+    underlying_price: Decimal
+    quotes: list[OptionQuote] = Field(default_factory=list)
+
+    def expirations(self) -> list[date]:
+        return sorted({q.contract.expiration for q in self.quotes})
+
+    def filter(self, *, expiration: Optional[date] = None, right: Optional[Right] = None) -> list[OptionQuote]:
+        result = self.quotes
+        if expiration is not None:
+            result = [q for q in result if q.contract.expiration == expiration]
+        if right is not None:
+            result = [q for q in result if q.contract.right == right]
+        return result
+
+    def nearest_to_delta(self, target_delta: Decimal, *, expiration: date, right: Right) -> Optional[OptionQuote]:
+        """The quote whose |delta| is closest to |target_delta| for a given expiration/right.
+        None if there are no candidates with a known delta."""
+        candidates = [q for q in self.filter(expiration=expiration, right=right) if q.delta is not None]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda q: abs(abs(q.delta) - abs(target_delta)))
+
+
 class Position(BaseModel):
     """An open (or closed) holding: a Spread, a size, and its entry/exit economics."""
 

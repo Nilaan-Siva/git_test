@@ -10,22 +10,32 @@ ask Claude to summarize it).
 
 ## Status
 
-**Phase 0 (foundations) complete.** Core domain models, market calendar, and validated config
-are in place and tested. Phases 1-3 (data layer, risk manager, strategies + backtest engine) are
-next; Phase 5 (IBKR paper execution) requires no real money -- it connects to IBKR's free paper
-trading account only.
+**Phases 0-1 complete** (foundations; data layer). Core domain models, market calendar,
+validated config, Black-Scholes pricing/greeks, the Polygon historical provider, a Parquet
+cache, and technical indicators are all in place and tested (83 tests).
+
+**Blocked on you:** the actual 6-month backfill (`scripts/fetch_data.py`) needs a Polygon.io
+free-tier API key in `.env` (`OPTIONSBOT_POLYGON_API_KEY`) -- it hasn't been run yet, and the
+Polygon response-parsing code, while unit-tested against fixture JSON, hasn't been smoke-tested
+against a live response. Run `python scripts/fetch_data.py --months 1 --tickers SPY` first as a
+smoke test once you add the key.
+
+Phase 2 (risk manager) and Phase 3 (strategies + backtest engine) are next; Phase 5 (IBKR paper
+execution) requires no real money -- it connects to IBKR's free paper trading account only.
 
 ## Layout
 
 ```
 optionsbot/
 ├── config/     # risk.yaml, strategies.yaml, universe.yaml (committed) + settings.py (.env)
-├── core/       # domain models (OptionContract, Spread, Position, ...) and the market calendar
+├── core/       # domain models (OptionContract, Spread, Position, Chain, ...) + market calendar
+├── data/       # ChainProvider (Polygon), Parquet cache, Black-Scholes pricing, indicators
 ├── ops/        # structured logging; health/scheduler land in Phase 5
+scripts/        # fetch_data.py (backfill); run_backtest.py etc. land in later phases
 tests/          # pytest
 ```
 
-Modules not yet present (`data/`, `strategy/`, `risk/`, `execution/`, `backtest/`, `portfolio/`,
+Modules not yet present (`strategy/`, `risk/`, `execution/`, `backtest/`, `portfolio/`,
 `learning/`, `reporting/`) are scaffolded in the plan and land in later phases.
 
 ## Development

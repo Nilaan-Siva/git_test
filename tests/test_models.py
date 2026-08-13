@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from optionsbot.core.enums import Action, PositionStatus, Right, StrategyName
-from optionsbot.core.models import Leg, OptionContract, OrderIntent, Position, Spread
+from optionsbot.core.models import Chain, Leg, OptionContract, OptionQuote, OrderIntent, Position, Spread
 
 
 def make_put(strike: str, expiration: date = date(2026, 9, 18)) -> OptionContract:
@@ -168,6 +168,70 @@ def test_total_max_loss_scales_with_quantity():
 
 
 # ---- OrderIntent ---------------------------------------------------------------------------
+
+
+# ---- OptionQuote / Chain --------------------------------------------------------------------
+
+
+def make_quote(strike: str, right: Right, delta: str, bid: str | None = "1.00", ask: str | None = "1.10") -> OptionQuote:
+    contract = OptionContract(underlying="SPY", expiration=date(2026, 9, 18), strike=Decimal(strike), right=right)
+    return OptionQuote(
+        contract=contract,
+        bid=Decimal(bid) if bid else None,
+        ask=Decimal(ask) if ask else None,
+        delta=Decimal(delta),
+        open_interest=500,
+    )
+
+
+def test_quote_mid_and_spread_pct():
+    q = make_quote("450", Right.PUT, delta="-0.30", bid="1.00", ask="1.20")
+    assert q.mid == Decimal("1.10")
+    assert q.spread_pct_of_mid == pytest.approx(Decimal("0.181818"), abs=Decimal("0.0001"))
+
+
+def test_quote_mid_is_none_without_both_sides():
+    q = make_quote("450", Right.PUT, delta="-0.30", bid=None, ask="1.20")
+    assert q.mid is None
+    assert q.spread_pct_of_mid is None
+
+
+def test_chain_expirations_and_filter():
+    exp = date(2026, 9, 18)
+    chain = Chain(
+        underlying="SPY",
+        as_of=date(2026, 8, 19),
+        underlying_price=Decimal("450"),
+        quotes=[
+            make_quote("440", Right.PUT, delta="-0.15"),
+            make_quote("445", Right.PUT, delta="-0.30"),
+            make_quote("455", Right.CALL, delta="0.30"),
+        ],
+    )
+    assert chain.expirations() == [exp]
+    puts = chain.filter(right=Right.PUT)
+    assert len(puts) == 2
+    assert all(q.contract.right == Right.PUT for q in puts)
+
+
+def test_chain_nearest_to_delta_picks_closest_match():
+    chain = Chain(
+        underlying="SPY",
+        as_of=date(2026, 8, 19),
+        underlying_price=Decimal("450"),
+        quotes=[
+            make_quote("440", Right.PUT, delta="-0.15"),
+            make_quote("445", Right.PUT, delta="-0.32"),
+            make_quote("435", Right.PUT, delta="-0.10"),
+        ],
+    )
+    nearest = chain.nearest_to_delta(Decimal("0.30"), expiration=date(2026, 9, 18), right=Right.PUT)
+    assert nearest.contract.strike == Decimal("445")
+
+
+def test_chain_nearest_to_delta_none_when_no_candidates():
+    chain = Chain(underlying="SPY", as_of=date(2026, 8, 19), underlying_price=Decimal("450"), quotes=[])
+    assert chain.nearest_to_delta(Decimal("0.30"), expiration=date(2026, 9, 18), right=Right.PUT) is None
 
 
 def test_order_intent_rejects_negative_max_loss():
