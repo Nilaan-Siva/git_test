@@ -51,6 +51,16 @@ class StrategyParams(BaseModel):
     short_delta_tolerance: Decimal = Decimal("0.05")
     min_iv_rank: Decimal = Decimal("30")
     spread_width: Decimal = Decimal("1")
+    # A credit too small relative to the width isn't worth the risk or the four commission
+    # charges it takes to open and close: on a 1-wide spread, $0.15 is ~$15 of max profit
+    # against ~$2.60 of round-trip commission. Below this floor the strategy stands down.
+    min_credit_pct_of_width: Decimal = Decimal("0.15")
+    # Trend filter lookback. Deliberately long (200 days, not 50): IV Rank rises precisely when
+    # price falls, so a short-term trend gate is almost perfectly anticorrelated with the IVR
+    # gate and the two together can veto every single day. A long-term gate instead expresses
+    # the setup this strategy actually wants -- sell premium into a pullback *within* an
+    # ongoing uptrend -- and stands down only when the longer trend has genuinely broken.
+    trend_sma_period: int = 200
 
 
 class StrategiesConfig(BaseModel):

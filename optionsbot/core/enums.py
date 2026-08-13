@@ -23,7 +23,16 @@ class Action(str, Enum):
 
     @property
     def is_short(self) -> bool:
+        """True if this action leaves/creates a SHORT exposure. Note this is about position
+        direction, NOT cash direction -- BUY_TO_CLOSE is 'short' in this sense but is a cash
+        outflow. Use `is_buy` when you care about which way the money moves."""
         return self in (Action.SELL_TO_OPEN, Action.BUY_TO_CLOSE)
+
+    @property
+    def is_buy(self) -> bool:
+        """True if the trader PAYS for this leg (cash outflow). The counterpart to `is_short`:
+        this is the property to use for any price/P&L arithmetic."""
+        return self in (Action.BUY_TO_OPEN, Action.BUY_TO_CLOSE)
 
     @property
     def closing_counterpart(self) -> "Action":
