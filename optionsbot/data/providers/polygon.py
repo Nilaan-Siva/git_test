@@ -298,13 +298,23 @@ class PolygonProvider(ChainProvider):
             raise DataUnavailableError(f"no expirations in range for {underlying}")
 
         spots = {day: float(bar["c"]) for day, bar in spot_bars.items() if bar.get("c")}
-        lo_spot, hi_spot = min(spots.values()), max(spots.values())
-        strike_min = Decimal(str(round(lo_spot * (1 - self.strike_band_below), 2)))
-        strike_max = Decimal(str(round(hi_spot * (1 + self.strike_band_above), 2)))
 
         # contract ticker -> (contract metadata, {date: bar})
         loaded: list[tuple[dict[str, Any], dict[date, dict[str, Any]]]] = []
         for expiration in expirations:
+            # Band the strikes per expiration, not once across the whole window. Each expiration
+            # is only relevant from its entry window down to expiry -- about two months -- over
+            # which spot moves a few percent. Banding against the 18-month high and low instead
+            # would quintuple the strike count, and every extra strike is another API call at
+            # five per minute.
+            relevant = [d for d in spots if 0 <= (expiration - d).days <= dte_max]
+            if not relevant:
+                continue
+            lo_spot = min(spots[d] for d in relevant)
+            hi_spot = max(spots[d] for d in relevant)
+            strike_min = Decimal(str(round(lo_spot * (1 - self.strike_band_below), 2)))
+            strike_max = Decimal(str(round(hi_spot * (1 + self.strike_band_above), 2)))
+
             contracts: list[dict[str, Any]] = []
             for right in rights or (None,):
                 contracts.extend(

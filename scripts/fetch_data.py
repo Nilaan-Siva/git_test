@@ -36,7 +36,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from optionsbot.config.loader import load_yaml_config
-from optionsbot.config.schema import UniverseConfig
+from optionsbot.config.schema import StrategiesConfig, UniverseConfig
 from optionsbot.config.settings import CONFIG_DIR, get_settings
 from optionsbot.core.enums import Right
 from optionsbot.data.cache import ParquetChainCache
@@ -66,7 +66,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--months", type=int, default=18, help="trailing months to backfill (backtest + warmup)")
     parser.add_argument("--tickers", nargs="*", default=None, help="override universe.yaml")
-    parser.add_argument("--strike-step", type=Decimal, default=Decimal("5"), help="keep only strikes on this grid")
+    parser.add_argument(
+        "--strike-step",
+        type=Decimal,
+        default=None,
+        help=(
+            "keep only strikes on this grid. MUST divide strategies.yaml's spread_width, or the "
+            "protective leg will not be in the cache and every proposal dies on "
+            "long_strike_not_listed. Defaults to the GCD of the configured spread widths."
+        ),
+    )
     parser.add_argument(
         "--puts-only",
         action="store_true",
@@ -85,7 +94,23 @@ def main() -> int:
         return 1
 
     universe = load_yaml_config(CONFIG_DIR / "universe.yaml", UniverseConfig)
+    strategies = load_yaml_config(CONFIG_DIR / "strategies.yaml", StrategiesConfig)
     tickers = args.tickers or universe.tickers
+
+    # A strike grid coarser than the spread width silently produces a cache the strategy cannot
+    # trade: it finds a short strike, looks `width` points below for the protective leg, and
+    # never finds one. Every day rejects with long_strike_not_listed and the backtest reports
+    # zero trades as though no setup qualified. Derive the grid from config rather than let the
+    # two drift apart.
+    widths = [p.spread_width for p in (strategies.put_credit_spread, strategies.iron_condor) if p.enabled]
+    required_step = min(widths) if widths else Decimal("1")
+    strike_step = args.strike_step if args.strike_step is not None else required_step
+    if strike_step > 0 and any(w % strike_step != 0 for w in widths):
+        logger.error(
+            f"--strike-step {strike_step} does not divide every enabled spread_width {widths}; "
+            f"the protective leg would be missing from the cache. Use {required_step} or a divisor of it."
+        )
+        return 1
 
     end = date.today()
     start = end - timedelta(days=int(args.months * 30.44))
@@ -99,20 +124,20 @@ def main() -> int:
     rights = (Right.PUT,) if args.puts_only else None
     n_rights = 1 if args.puts_only else 2
     # A 12%-below-to-3%-above band on a 5-point grid over a ~700 underlying is ~21 strikes.
-    strikes_guess = int((0.15 * 700) / float(args.strike_step)) if args.strike_step else 100
+    strikes_guess = max(1, int((0.15 * 700) / float(strike_step))) if strike_step else 100
     per_ticker = estimate_calls(len(expirations), strikes_guess, n_rights)
     total = per_ticker * len(tickers)
     minutes = total / FREE_TIER_CALLS_PER_MINUTE
 
     logger.info(
         f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
-        f"strike step {args.strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
+        f"strike step {strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
     )
     logger.info(f"estimated ~{total} API calls at {FREE_TIER_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
     if args.dry_run:
         return 0
 
-    provider = PolygonProvider(settings.polygon_api_key, strike_step=args.strike_step)
+    provider = PolygonProvider(settings.polygon_api_key, strike_step=strike_step)
     cache = ParquetChainCache(settings.cache_dir)
 
     written, skipped, failed = 0, 0, 0

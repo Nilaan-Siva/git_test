@@ -281,6 +281,59 @@ def test_rights_filter_halves_the_listing_calls():
     assert len(listing(puts)) == 1 and listing(puts)[0]["contract_type"] == "put"
 
 
+def test_strike_bands_are_computed_per_expiration_not_across_the_whole_window():
+    """Banding once against the 18-month high and low multiplies the strike count -- and every
+    extra strike is another API call at five per minute.
+
+    Each expiration only matters from its entry window down to expiry, roughly two months, over
+    which spot moves a few percent. Here the underlying runs 600 -> 900; a global band would ask
+    for strikes from ~530 upward, while the near expiration should only ask around its own
+    ~600-620 range.
+    """
+    requested: list[tuple[float, float]] = []
+
+    class Banded(FakeHttpClient):
+        def get(self, url, params):
+            self.calls.append((url, params))
+            if "reference/options/contracts" in url:
+                requested.append((params["strike_price.gte"], params["strike_price.lte"]))
+                return {"results": []}
+            if "aggs/ticker/O:" in url:
+                return {"results": []}
+            # spot climbs steeply across the window
+            return {"results": [bar(JUN10, 600.0), bar(JUN11, 900.0)]}
+
+    provider = PolygonProvider("key", client=Banded({}))
+    list(
+        provider.build_chains(
+            "SPY", date(2026, 6, 10), date(2026, 6, 11), expirations=[date(2026, 7, 17)], dte_max=60
+        )
+    )
+
+    assert requested, "no contract listing was requested"
+    low, high = requested[0]
+    # a global band on the 600..900 range would start near 528; a per-expiration one must not
+    assert low > 520
+    assert high < 1000
+
+
+def test_expirations_with_no_relevant_days_are_skipped_entirely():
+    """An expiration outside the window costs nothing -- it must not trigger a listing call."""
+
+    class Counting(FakeHttpClient):
+        def get(self, url, params):
+            self.calls.append((url, params))
+            if "reference/options/contracts" in url:
+                return {"results": []}
+            return {"results": [bar(JUN10, 725.43)]}
+
+    client = Counting({})
+    provider = PolygonProvider("key", client=client)
+    # expiration is years past the data window, so no day is within dte_max of it
+    list(provider.build_chains("SPY", date(2026, 6, 10), date(2026, 6, 10), expirations=[date(2030, 1, 18)]))
+    assert not [u for u, _ in client.calls if "reference/options/contracts" in u]
+
+
 def test_build_chains_raises_when_the_underlying_has_no_bars():
     client = make_client(**{"aggs/ticker/SPY": {"results": []}})
     provider = PolygonProvider("key", client=client)
