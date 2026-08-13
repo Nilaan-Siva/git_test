@@ -9,7 +9,12 @@ put_credit_spread:
   short_delta_target: 0.30
   short_delta_tolerance: 0.05
   min_iv_rank: 30
-  spread_width: 1        # 1-wide, XSP-friendly for small accounts
+  # 3-wide, sized for a $25,000 account at 1% per trade ($250 of budget against a ~$232 max
+  # loss). Narrower is NOT friendlier to a small account, which is the counter-intuitive lesson
+  # from live pricing: a 1-wide SPY spread collects ~$23 and pays $2.60 in commission, so 11%
+  # of every winner is gone before slippage. Widening raises the dollars at risk and therefore
+  # the minimum account, but it is the only way to get fixed costs out of the way.
+  spread_width: 3
 
 iron_condor:
   enabled: false         # enable once put_credit_spread has a validated walk-forward backtest

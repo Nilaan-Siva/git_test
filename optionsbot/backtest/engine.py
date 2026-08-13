@@ -61,7 +61,7 @@ class BacktestConfig:
     start: date
     end: date
     tickers: Sequence[str]
-    starting_equity: Decimal = Decimal("10000")
+    starting_equity: Decimal = Decimal("25000")
     # Calendar days of chain data loaded before `start` to prime IV Rank and the trend filter.
     # These days are marked and managed but never traded. A year is the working default because
     # that is what the two slowest signals need: a 252-day IV Rank window and a 200-day trend

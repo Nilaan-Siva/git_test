@@ -4,13 +4,19 @@
 # learning loop is NOT allowed to edit this file -- only strategies.yaml. Edit by hand, with
 # care; changes take effect on restart.
 
-# Your rule is "never more than 1% per trade" -- a ceiling, not a target. Sizing at 0.4% keeps
-# every trade well inside it while letting ~15 positions run at once against the same 6% total
-# cap, which is what lifts the trade rate toward one entry per day. The cost is a minimum
-# account size: at 0.4%, a 1-wide SPY spread (~$70 max loss) needs ~$17,500 of equity before
-# the bot can size even one contract. Below that it will correctly refuse to trade at all.
-# Raise this back toward 0.01 if you would rather trade a smaller account less often.
-max_risk_per_trade_pct: 0.004
+# 1% of equity, max loss, per trade -- your rule, at its ceiling.
+#
+# This was briefly set to 0.4% to push the trade rate toward one entry per day. Live SPY pricing
+# showed what that actually costs. Commission drag is set by dollars risked per trade and
+# nothing else: $2.60 round trip against a 1-wide spread's ~$23 of max profit is 11%, which is
+# very likely larger than the strategy's whole edge. Getting drag under ~4% needs ~$230 at risk
+# per trade, and at 0.4% that would demand a $58,000 account.
+#
+# At 1% on $25,000 that is $250 per trade, which buys a 3-wide SPY spread at ~3.8% drag. The
+# cost is concurrency: the 6% heat cap allows 6 positions at 1% instead of 15 at 0.4%, so the
+# trade rate lands near 50/year rather than 120. That is the honest trade, and at this account
+# size it is the right side of it.
+max_risk_per_trade_pct: 0.01
 max_portfolio_heat_pct: 0.06          # total open risk across all positions, normally
 max_portfolio_heat_pct_high_vix: 0.04 # tighter heat cap when VIX is elevated
 high_vix_threshold: 25

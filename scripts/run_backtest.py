@@ -85,7 +85,7 @@ def main() -> int:
     parser.add_argument("--source", choices=["cache", "synthetic"], default="cache")
     parser.add_argument("--seed", type=int, default=1, help="synthetic market seed (ignored for --source cache)")
     parser.add_argument("--slippage", choices=[*SLIPPAGE_MODELS, "all"], default="all")
-    parser.add_argument("--equity", type=Decimal, default=Decimal("10000"), help="starting equity")
+    parser.add_argument("--equity", type=Decimal, default=Decimal("25000"), help="starting equity")
     parser.add_argument(
         "--warmup-days",
         type=int,
