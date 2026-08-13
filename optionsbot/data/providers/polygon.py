@@ -36,10 +36,12 @@ trading will use, but it is deliberately the slow path: prefer `build_chains` fo
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol
 
 from optionsbot.core.clock import EASTERN
@@ -158,6 +160,7 @@ class PolygonProvider(ChainProvider):
         strike_band_below: float = 0.12,
         strike_band_above: float = 0.03,
         strike_step: Optional[Decimal] = None,
+        bar_cache_dir: Optional[Path] = None,
     ):
         """`strike_band_*` bound which strikes are worth fetching, as fractions of spot.
 
@@ -176,6 +179,7 @@ class PolygonProvider(ChainProvider):
         self.strike_band_below = strike_band_below
         self.strike_band_above = strike_band_above
         self.strike_step = strike_step
+        self.bar_cache_dir = bar_cache_dir
 
     # ---- low-level endpoints ---------------------------------------------------------------
 
@@ -198,7 +202,16 @@ class PolygonProvider(ChainProvider):
 
         This is the method that makes a free-tier backfill possible at all -- see the module
         docstring. One call per contract, not one per contract per day.
+
+        Results are memoised to `bar_cache_dir` when one is set. That is what makes a multi-hour
+        backfill survivable: chains can only be assembled once every contract is loaded, so
+        without a per-contract cache an interruption at 95% throws away 95% of the rate limit
+        budget and starts over. With one, a restart replays from disk in seconds.
         """
+        cached = self._read_cached_bars(option_ticker)
+        if cached is not None:
+            return cached
+
         raw = self._client.get(
             f"{POLYGON_BASE_URL}/v2/aggs/ticker/{option_ticker}/range/1/day/"
             f"{start.isoformat()}/{end.isoformat()}",
@@ -209,7 +222,40 @@ class PolygonProvider(ChainProvider):
             day = _bar_date(bar)
             if day is not None:
                 out[day] = bar
+        self._write_cached_bars(option_ticker, raw.get("results") or [])
         return out
+
+    def _bar_cache_path(self, option_ticker: str):
+        if self.bar_cache_dir is None:
+            return None
+        # OCC tickers contain a colon, which is not portable in filenames.
+        return self.bar_cache_dir / f"{option_ticker.replace(':', '_')}.json"
+
+    def _read_cached_bars(self, option_ticker: str) -> Optional[dict[date, dict[str, Any]]]:
+        path = self._bar_cache_path(option_ticker)
+        if path is None or not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None  # a half-written file from a killed run; refetch rather than trust it
+        out = {}
+        for bar in raw:
+            day = _bar_date(bar)
+            if day is not None:
+                out[day] = bar
+        return out
+
+    def _write_cached_bars(self, option_ticker: str, bars: list[dict[str, Any]]) -> None:
+        path = self._bar_cache_path(option_ticker)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename: a run killed mid-write must not leave a truncated file that a
+        # later run would happily read as a complete, empty contract history.
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(bars))
+        tmp.replace(path)
 
     def list_contracts(
         self,

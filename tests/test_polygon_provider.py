@@ -334,6 +334,56 @@ def test_expirations_with_no_relevant_days_are_skipped_entirely():
     assert not [u for u, _ in client.calls if "reference/options/contracts" in u]
 
 
+def test_option_bars_are_cached_to_disk_and_reused(tmp_path):
+    """What makes a multi-hour backfill survivable.
+
+    Chains can only be assembled after every contract is loaded, so an interruption at 95%
+    otherwise discards 95% of a rate-limited budget and starts from nothing. A second run must
+    replay from disk without spending a single call.
+    """
+    client = make_client(**{"aggs/ticker/O:": {"results": [bar(JUN10, 8.50, volume=250)]}})
+    provider = PolygonProvider("key", client=client, bar_cache_dir=tmp_path)
+
+    first = provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+    calls_after_first = len(client.calls)
+    second = provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+
+    assert first == second
+    assert len(client.calls) == calls_after_first, "cached contract was refetched"
+    assert list(tmp_path.glob("*.json")), "nothing was written to the bar cache"
+
+
+def test_bar_cache_filenames_survive_the_colon_in_occ_tickers(tmp_path):
+    client = make_client(**{"aggs/ticker/O:": {"results": [bar(JUN10, 8.50)]}})
+    provider = PolygonProvider("key", client=client, bar_cache_dir=tmp_path)
+    provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+    written = list(tmp_path.glob("*.json"))
+    assert len(written) == 1 and ":" not in written[0].name
+
+
+def test_a_truncated_cache_file_is_refetched_rather_than_trusted(tmp_path):
+    """A run killed mid-write must not leave a corrupt file that a later run reads as a
+    complete, empty contract history -- that would silently drop the contract from every chain.
+    """
+    client = make_client(**{"aggs/ticker/O:": {"results": [bar(JUN10, 8.50)]}})
+    provider = PolygonProvider("key", client=client, bar_cache_dir=tmp_path)
+    (tmp_path / "O_SPY260717P00700000.json").write_text('[{"t": 1781064000000, "c":')  # truncated
+
+    bars = provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+
+    assert bars, "corrupt cache was trusted instead of refetched"
+    assert len(client.calls) == 1
+
+
+def test_no_bar_cache_dir_means_no_files_and_no_memoisation(tmp_path):
+    client = make_client(**{"aggs/ticker/O:": {"results": [bar(JUN10, 8.50)]}})
+    provider = PolygonProvider("key", client=client)
+    provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+    provider.option_bars("O:SPY260717P00700000", date(2026, 6, 10), date(2026, 6, 10))
+    assert len(client.calls) == 2
+    assert not list(tmp_path.iterdir())
+
+
 def test_build_chains_raises_when_the_underlying_has_no_bars():
     client = make_client(**{"aggs/ticker/SPY": {"results": []}})
     provider = PolygonProvider("key", client=client)

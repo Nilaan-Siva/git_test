@@ -19,7 +19,9 @@ puts *and* calls doubles every number below. At 5 calls/min, with monthly expira
     4 underlyings, 18 months, puts only                       ~5.5 hours
     12 underlyings, 18 months, puts and calls                 ~32 hours
 
-Always start with --dry-run; it prints the estimate and exits. Use --strike-step 5 unless you
+Every contract's bars are cached individually under <cache_dir>/bars, so an interrupted run
+replays from disk in seconds and only fetches what it never got to. Always start with
+--dry-run; it prints the estimate and exits. Use --strike-step 5 unless you
 specifically need $1 strikes, and --puts-only unless you intend to trade iron condors, which are
 disabled by default. Progress is written to the cache as it goes, so an interrupted run resumes
 where it stopped rather than starting over.
@@ -137,7 +139,11 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    provider = PolygonProvider(settings.polygon_api_key, strike_step=strike_step)
+    # Per-contract bar cache: chains can only be assembled once every contract is loaded, so
+    # without this an interruption at 95% discards 95% of a multi-hour rate-limit budget.
+    provider = PolygonProvider(
+        settings.polygon_api_key, strike_step=strike_step, bar_cache_dir=settings.cache_dir / "bars"
+    )
     cache = ParquetChainCache(settings.cache_dir)
 
     written, skipped, failed = 0, 0, 0
