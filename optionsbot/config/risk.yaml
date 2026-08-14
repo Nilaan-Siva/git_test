@@ -18,11 +18,17 @@
 # the kill-switch threshold, so the switch could never fire before the first loss did the harm
 # itself. At 5%, it still can.
 max_risk_per_trade_pct: 0.05
-max_portfolio_heat_pct: 0.20          # total open risk across all positions, normally -- pairs
-                                       # with 5% per trade to allow 4 concurrent positions, which
-                                       # is also the bucket cap below, so heat (not a position
-                                       # count) is the binding constraint.
-max_portfolio_heat_pct_high_vix: 0.10 # halved when VIX is elevated -- 2 concurrent positions
+# 30% total open risk -> 6 concurrent positions at 5% each (was 20%/4).
+#
+# Raised to chase a higher trade frequency: sustaining N trades/week needs roughly
+# N/week x ~19-day average hold concurrent positions open at once (Little's Law), and 4 slots
+# capped throughput at ~1.5/week no matter how many setups the strategy found. 6 slots gets to
+# ~2/week -- still short of the 3-4/week target, but a real bottleneck fix within a size of step
+# that was deliberately kept "modest" rather than the ~50% heat that 3-4/week would actually
+# require. Going further than this trades concurrent worst-case exposure directly for frequency;
+# revisit only alongside a real measured trade rate, not another guess.
+max_portfolio_heat_pct: 0.30
+max_portfolio_heat_pct_high_vix: 0.15 # halved when VIX is elevated -- 3 concurrent positions
 high_vix_threshold: 25
 
 max_daily_loss_pct: 0.03              # realized+unrealized daily loss -> halt new entries today

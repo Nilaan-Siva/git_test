@@ -4,11 +4,21 @@
 
 put_credit_spread:
   enabled: true
-  target_dte_min: 30
-  target_dte_max: 50
+  # DTE window widened from 30-50: a few extra monthly expirations now fall inside it, which is
+  # more chances to enter without changing what a "found" trade looks like.
+  target_dte_min: 25
+  target_dte_max: 55
   short_delta_target: 0.30
-  short_delta_tolerance: 0.05
-  min_iv_rank: 30
+  # Widened from 0.05: a chain with nothing between 25 and 35 delta used to stand down entirely.
+  # This lets a 22-38 delta strike count as "close enough to 30", trading a bit of precision on
+  # the short leg's odds for more days that clear the bar at all.
+  short_delta_tolerance: 0.08
+  # Lowered from 30: this was the single biggest reason the strategy sat out entire months (IV
+  # Rank and the 200-day trend filter are near-inverses, so raising both floors compounds into
+  # "never trades" fast). 20 still requires IV meaningfully above its own one-year range, just a
+  # less extreme requirement -- and it's the lever this project has explicitly been trying not to
+  # pull, so treat any resulting frequency gain as coming with real edge dilution, not free.
+  min_iv_rank: 20
   # spread_width (below) is legacy and NOT read by put_credit_spread anymore -- see
   # target_width_pct_of_spot. A fixed points width can't serve a universe spanning a $58 ETF and
   # a $770 one at once: 3 points is 0.4% of the expensive name and 5% of the cheap one, so the
