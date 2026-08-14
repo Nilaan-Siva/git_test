@@ -12,12 +12,11 @@ cost scales with the number of *contracts*, not contracts x days:
 
     calls ~= 1 + expirations * rights * (1 + strikes_per_expiration)
 
-`rights` is the easy factor of two to forget: fetching puts *and* calls doubles everything. At
-4 calls/min with monthly expirations, on a strike grid matching the configured spread width:
-
-    SPY, 18 months, puts only                                 ~2.9 hours
-    SPY, 18 months, puts and calls                            ~5.7 hours
-    4 underlyings, 18 months, puts only                       ~11 hours
+`rights` is the easy factor of two to forget: fetching puts *and* calls doubles everything.
+`strikes_per_expiration` is the other one: the strike band is a FRACTION of each ticker's own
+price (~15% wide by default), so a $770 name and a $58 one need very different strike counts at
+the same --strike-step. --dry-run fetches one cheap recent-price lookup per ticker to estimate
+this for real rather than assuming every ticker is SPY-priced.
 
 Every contract's bars are cached individually under <cache_dir>/bars, so an interrupted run
 replays from disk in seconds and only fetches what it never reached. Always start with
@@ -125,25 +124,43 @@ def main() -> int:
     expirations = monthly_expirations(start + timedelta(days=25), end + timedelta(days=60))
     rights = (Right.PUT,) if args.puts_only else None
     n_rights = 1 if args.puts_only else 2
-    # A 12%-below-to-3%-above band on a 5-point grid over a ~700 underlying is ~21 strikes.
-    strikes_guess = max(1, int((0.15 * 700) / float(strike_step))) if strike_step else 100
-    per_ticker = estimate_calls(len(expirations), strikes_guess, n_rights)
-    total = per_ticker * len(tickers)
-    minutes = total / DEFAULT_THROTTLE_CALLS_PER_MINUTE
-
-    logger.info(
-        f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
-        f"strike step {strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
-    )
-    logger.info(f"estimated ~{total} API calls at {DEFAULT_THROTTLE_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
-    if args.dry_run:
-        return 0
 
     # Per-contract bar cache: chains can only be assembled once every contract is loaded, so
     # without this an interruption at 95% discards 95% of a multi-hour rate-limit budget.
     provider = PolygonProvider(
         settings.polygon_api_key, strike_step=strike_step, bar_cache_dir=settings.cache_dir / "bars"
     )
+
+    # The strike band is a fraction of each ticker's OWN price (see build_chains), so the call
+    # count is not one number shared by every ticker -- a $58 name needs a fraction of the
+    # strikes a $770 one does at the same strike_step. One lightweight bars call per ticker (a
+    # few days of history) gets a real recent price to estimate against, instead of assuming
+    # every ticker is SPY-priced and overestimating the cheap ones by 5-10x.
+    band = provider.strike_band_below + provider.strike_band_above
+    logger.info(
+        f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
+        f"strike step {strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
+    )
+    total = 0
+    for ticker in tickers:
+        try:
+            recent = provider.underlying_bars(ticker, end - timedelta(days=10), end)
+            price = float(list(recent.values())[-1]["c"]) if recent else None
+        except DataUnavailableError:
+            price = None
+        if price is None:
+            logger.warning(f"{ticker}: couldn't fetch a recent price for the estimate, assuming $700 (upper bound)")
+            price = 700.0
+        strikes_guess = max(1, int((band * price) / float(strike_step))) if strike_step else 100
+        per_ticker = estimate_calls(len(expirations), strikes_guess, n_rights)
+        total += per_ticker
+        logger.info(f"  {ticker}: ~${price:.0f}, ~{strikes_guess} strikes/expiration -> ~{per_ticker} calls")
+    minutes = total / DEFAULT_THROTTLE_CALLS_PER_MINUTE
+
+    logger.info(f"estimated ~{total} API calls at {DEFAULT_THROTTLE_CALLS_PER_MINUTE}/min -> ~{minutes/60:.1f} hours")
+    if args.dry_run:
+        return 0
+
     cache = ParquetChainCache(settings.cache_dir)
 
     written, skipped, failed = 0, 0, 0
