@@ -1,39 +1,31 @@
 # Tradable underlyings and liquidity floors. The risk manager and backtest engine both reject
 # anything failing these floors regardless of strategy signal.
 #
-# WHY THIS LIST IS SHORT, AND WHY EVERY NAME IS EXPENSIVE
+# WHY THIS LIST USED TO BE SIX HIGH-PRICED NAMES, AND WHY IT ISN'T ANYMORE
 #
-# Spread width is configured in points, but what a point *means* depends on the underlying's
-# price. Measured against real prices on 2026-08-12, a 3-point spread is:
+# put_credit_spread used to configure its width as a fixed number of points, and what a point
+# *means* depends entirely on the underlying's price: 3 points was 0.39% of SPY at $772 but 5.18%
+# of XLF at $58. On the cheap names the protective leg sat so far out of the money that it was
+# nearly worthless and the position behaved like a naked short put rather than a spread -- max
+# loss was still capped, so no risk limit objected, but it wasn't the trade the strategy meant to
+# place. That was true no matter how the one shared width was tuned: narrower didn't rescue the
+# cheap names either, since a $1-wide TLT spread collected ~$22 against $2.60 of round-trip
+# commission. So the universe was six high-priced ETFs, because that's what one fixed width could
+# serve.
 #
-#     SPY  $772   0.39%   fine
-#     QQQ  $724   0.41%   fine
-#     DIA  $537   0.56%   fine
-#     GLD  $405   0.74%   fine
-#     IWM  $303   0.99%   fine
-#     XLK  $189   1.59%   coarse, borderline
-#     USO  $127   2.36%   too wide
-#     EEM   $66   4.51%   far too wide
-#     XLE   $61   4.92%   far too wide
-#     XLF   $58   5.18%   far too wide
-#     SLV   $59   5.08%   far too wide
-#     TLT   $82   3.65%   far too wide
+# The strategy no longer has one fixed width. It now targets a width as a FRACTION of each
+# underlying's spot price (see strategies.yaml's target_width_pct_of_spot) and searches the real
+# option chain for whichever listed strike sits closest to that dollar amount -- so the same
+# setting produces a sensibly-sized spread on a $58 ETF and a $770 one alike.
+# strategy/filters.check_width_suits_underlying still enforces a cap (2% of spot) against
+# whatever width the chain actually offers, so a name whose strike grid is too sparse to produce
+# a sane spread still stands itself down and says so in the journal -- the cap didn't move, only
+# the width it's checking against is dynamic now.
 #
-# On the cheap names the protective leg sits so far out of the money that it is nearly
-# worthless, and the position behaves like a naked short put rather than a spread. Max loss is
-# still capped, so no risk limit objects -- it simply is not the trade the strategy intends. A
-# live check confirmed it: TLT returned a single usable strike whose delta missed the target.
-#
-# Narrowing the width for the cheap names does not rescue them either. A $1-wide spread on TLT
-# collects around $22, against $2.60 of round-trip commission -- roughly 12% of the profit gone
-# in fees. Cheap underlyings and defined-risk spreads are a poor fit at any account size.
-#
-# So the universe is high-priced ETFs only. Six names, deliberately: the portfolio heat cap
-# allows six concurrent positions, and these six supply exactly that many slots. Adding cheap
-# tickers would add backfill hours and no trades.
-#
-# strategy/filters.check_width_suits_underlying enforces this at runtime, so a name that drifts
-# too cheap stands itself down and says so in the journal rather than trading badly.
+# That is what makes the six previously-excluded names addable: TLT, SLV, XLE, USO, XLF, and EEM
+# rejoin the SPY/QQQ/DIA/IWM/XLK/GLD core below. All twelve are already grouped into
+# risk.yaml's correlated_buckets, so adding them widens the set of independent signals the
+# strategy can find without the heat cap silently becoming a leveraged bet on one sector.
 
 tickers:
   - SPY   # S&P 500
@@ -41,7 +33,13 @@ tickers:
   - DIA   # Dow 30
   - IWM   # Russell 2000 small caps
   - XLK   # US technology sector
-  - GLD   # gold -- the only name here uncorrelated with equities
+  - GLD   # gold
+  - SLV   # silver -- precious metals, with GLD
+  - TLT   # 20+ year Treasuries
+  - XLE   # energy sector
+  - USO   # crude oil -- energy, with XLE
+  - XLF   # financials sector
+  - EEM   # emerging markets equity
 
 min_option_open_interest: 100
 min_option_volume_when_oi_unknown: 10

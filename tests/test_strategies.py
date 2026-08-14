@@ -97,7 +97,8 @@ def test_proposes_a_correctly_structured_put_credit_spread():
 
     short, long = intent.spread.legs
     assert short.action == Action.SELL_TO_OPEN and short.contract.strike == Decimal("439")
-    assert long.action == Action.BUY_TO_OPEN and long.contract.strike == Decimal("438")
+    # 0.4% of spot (450) targets a 2-wide spread, and 437 is exactly 2 below the short.
+    assert long.action == Action.BUY_TO_OPEN and long.contract.strike == Decimal("437")
     assert short.contract.right == long.contract.right == Right.PUT
     # long strike is BELOW the short: the protective leg must be further out of the money
     assert long.contract.strike < short.contract.strike
@@ -107,12 +108,12 @@ def test_intent_is_priced_as_a_credit_with_matching_defined_risk():
     ctx = make_context(default_put_chain())
     intent = PutCreditSpread(ctx.params).propose(ctx)[0]
 
-    # sell the 439 for 4.30, buy the 438 for 4.00 -> 0.30 credit
-    assert intent.limit_price_per_share == Decimal("-0.30")
-    assert intent.max_profit_per_contract == Decimal("30.00")  # 0.30 * 100
-    assert intent.max_loss_per_contract == Decimal("70.00")  # (1.00 - 0.30) * 100
+    # sell the 439 for 4.30, buy the 437 for 3.72 -> 0.58 credit on a 2-wide spread
+    assert intent.limit_price_per_share == Decimal("-0.58")
+    assert intent.max_profit_per_contract == Decimal("58.00")  # 0.58 * 100
+    assert intent.max_loss_per_contract == Decimal("142.00")  # (2.00 - 0.58) * 100
     # the two must sum to the full width, or the risk manager is sizing against a fiction
-    assert intent.max_loss_per_contract + intent.max_profit_per_contract == Decimal("100")
+    assert intent.max_loss_per_contract + intent.max_profit_per_contract == Decimal("200")
 
 
 def test_intent_carries_a_rationale_for_the_journal():
@@ -122,12 +123,40 @@ def test_intent_carries_a_rationale_for_the_journal():
     assert "439" in intent.rationale
 
 
-def test_wider_spread_width_is_honoured():
-    params = StrategyParams(spread_width=Decimal("2"))
-    ctx = make_context(default_put_chain(), params=params)
+def wide_put_chain():
+    """$1-spaced puts from 430 to 441 -- wide enough to test width scaling, not just a single
+    candidate below the short."""
+    return [
+        put_quote(441, delta="-0.36", price="4.90"),
+        put_quote(440, delta="-0.33", price="4.60"),
+        put_quote(439, delta="-0.30", price="4.30"),
+        put_quote(438, delta="-0.27", price="4.00"),
+        put_quote(437, delta="-0.24", price="3.72"),
+        put_quote(436, delta="-0.21", price="3.44"),
+        put_quote(435, delta="-0.18", price="3.16"),
+        put_quote(434, delta="-0.15", price="2.90"),
+        put_quote(433, delta="-0.12", price="2.65"),
+        put_quote(432, delta="-0.09", price="2.40"),
+        put_quote(431, delta="-0.06", price="2.20"),
+        put_quote(430, delta="-0.03", price="2.00"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "target_pct,expected_long_strike",
+    [
+        (Decimal("0.004"), Decimal("437")),  # 0.4% of 450 -> target width 2
+        (Decimal("0.01"), Decimal("435")),  # 1% of 450 -> target width 4
+        (Decimal("0.02"), Decimal("430")),  # 2% of 450 -> target width 9, right at the cap
+    ],
+)
+def test_width_scales_as_a_fraction_of_spot(target_pct, expected_long_strike):
+    """target_width_pct_of_spot -- not a fixed points value -- drives strike selection: the same
+    setting has to widen when spot is higher, which is the whole point of the rebuild."""
+    params = StrategyParams(target_width_pct_of_spot=target_pct)
+    ctx = make_context(wide_put_chain(), params=params)
     intent = PutCreditSpread(params).propose(ctx)[0]
-    assert intent.spread.legs[1].contract.strike == Decimal("437")
-    assert intent.spread.width == Decimal("2")
+    assert intent.spread.legs[1].contract.strike == expected_long_strike
 
 
 # ---- put credit spread: rejection paths ------------------------------------------------------------
@@ -186,11 +215,23 @@ def test_rejects_when_no_put_carries_a_delta():
     assert any("no_delta_data" in note for note in ctx.notes)
 
 
-def test_rejects_when_the_protective_strike_is_not_listed():
+def test_finds_the_nearest_protective_strike_when_the_target_is_not_listed():
+    """A gap in the strike grid is not a rejection -- the nearest listed strike still protects
+    the short leg, just at a different width than the target. This is the capability the
+    rebuild exists for: real chains don't always list a strike at the exact target."""
     gapped = [put_quote(439, delta="-0.30", price="4.30"), put_quote(435, delta="-0.22", price="3.40")]
     ctx = make_context(gapped)
+    intent = PutCreditSpread(ctx.params).propose(ctx)[0]
+    assert intent.spread.legs[1].contract.strike == Decimal("435")
+
+
+def test_rejects_when_nothing_protects_the_short_leg():
+    """No put listed below the short strike at all -- distinct from a gap, this is genuinely
+    'no usable spread here', not the strategy being picky about width."""
+    only_short = [put_quote(439, delta="-0.30", price="4.30")]
+    ctx = make_context(only_short)
     assert PutCreditSpread(ctx.params).propose(ctx) == []
-    assert any("long_strike_not_listed" in note for note in ctx.notes)
+    assert any("no_protective_strike" in note for note in ctx.notes)
 
 
 def test_rejects_an_illiquid_leg():
@@ -241,41 +282,41 @@ def test_rejects_when_the_credit_would_exceed_the_width():
     assert any("inconsistent_pricing" in note for note in ctx.notes)
 
 
+def sparse_cheap_chain():
+    """A cheap underlying's strikes are spaced $5 apart -- the nearest listed protective strike
+    can land far wider than the target, and the width cap has to catch that regardless of what
+    the target was aiming for."""
+    return [
+        put_quote(30, delta="-0.30", price="1.20"),
+        put_quote(25, delta="-0.20", price="0.80"),
+    ]
+
+
 def test_rejects_a_width_too_wide_for_the_underlying():
-    """A 3-point spread is 0.4% of SPY at $772 and 5% of XLF at $58 -- the same setting, but on
-    the cheap name the protective leg sits so far out that the position is closer to a naked
-    short put than a spread. Max loss is still bounded, so no risk limit catches it; the
-    strategy has to notice that the structure is not the one it means to place."""
-    params = StrategyParams(spread_width=Decimal("3"))
-    ctx = make_context(default_put_chain(), params=params, spot=Decimal("58"))
-    assert PutCreditSpread(params).propose(ctx) == []
+    """The target width is tiny (0.4% of $58 rounds to $1), but the nearest real strike on this
+    sparsely-listed cheap name is $5 away -- 8.6% of spot, well past the 2% cap. Max loss is
+    still bounded, so no risk limit catches it; the strategy has to notice that the structure
+    the chain handed back is not the one it means to place."""
+    ctx = make_context(sparse_cheap_chain(), spot=Decimal("58"))
+    assert PutCreditSpread(ctx.params).propose(ctx) == []
     assert any("width_unsuitable_for_underlying" in note for note in ctx.notes)
 
 
 def test_accepts_the_same_width_on_a_high_priced_underlying():
-    """The mirror of the test above: 2 points is 0.26% of a $772 underlying, well inside the
-    cap, so the identical structure is allowed through."""
-    params = StrategyParams(spread_width=Decimal("2"))
-    ctx = make_context(default_put_chain(), params=params, spot=Decimal("772"))
-    assert len(PutCreditSpread(params).propose(ctx)) == 1
+    """The mirror of the test above: the widest strike this chain offers below the short (437,
+    2 points down) is only 0.26% of a $772 underlying, well inside the cap."""
+    ctx = make_context(default_put_chain(), spot=Decimal("772"))
+    assert len(PutCreditSpread(ctx.params).propose(ctx)) == 1
 
 
-def test_rejects_that_same_width_on_a_cheap_underlying():
-    params = StrategyParams(spread_width=Decimal("2"))
-    ctx = make_context(default_put_chain(), params=params, spot=Decimal("58"))
-    assert PutCreditSpread(params).propose(ctx) == []
-    assert any("width_unsuitable_for_underlying" in note for note in ctx.notes)
-
-
-def test_rejects_a_long_strike_at_or_below_zero():
-    """Only reachable with the width-vs-spot guard relaxed: at the 2% default, a width large
-    enough to drive the long strike below zero is rejected earlier by
-    `test_rejects_a_width_too_wide_for_the_underlying`. Kept so the arithmetic guard itself
-    stays covered if that cap is ever loosened."""
-    params = StrategyParams(spread_width=Decimal("500"), max_spread_width_pct_of_spot=Decimal("10"))
-    ctx = make_context(default_put_chain(), params=params)
-    assert PutCreditSpread(params).propose(ctx) == []
-    assert any("invalid_long_strike" in note for note in ctx.notes)
+def test_finds_a_suitable_width_on_a_cheap_underlying():
+    """The whole point of the rebuild: this same chain, at this same cheap spot, would have
+    failed under the old fixed 3-point width (5% of $58, past the cap). Dynamic width instead
+    targets $1 here and finds a listed strike exactly there, so the trade goes through."""
+    ctx = make_context(default_put_chain(), spot=Decimal("58"))
+    intent = PutCreditSpread(ctx.params).propose(ctx)[0]
+    assert intent.spread.legs[1].contract.strike == Decimal("438")
+    assert intent.spread.width == Decimal("1")
 
 
 # ---- iron condor -------------------------------------------------------------------------------------

@@ -16,11 +16,14 @@ def test_load_shipped_risk_config():
     assert "SPY" in cfg.correlated_buckets["us_broad_market"]
 
 
-def test_shipped_per_trade_risk_stays_within_the_one_percent_ceiling():
-    """The account rule is "never more than 1% per trade". It is a ceiling, not a target, so
-    the shipped value may be lower -- but it must never drift above, whatever else is tuned."""
+def test_shipped_per_trade_risk_stays_within_the_five_percent_ceiling():
+    """The account rule started at "never more than 1% per trade" and was deliberately raised to
+    5%, in exchange for accepting the drawdown math that comes with it (a 5-loss streak
+    compounds to ~22.6%, but the 15% kill switch fires around loss 4, before the streak
+    finishes). It is still a ceiling, not a target, so the shipped value may be lower -- but it
+    must never drift above 5% silently, whatever else is tuned."""
     cfg = load_yaml_config(CONFIG_DIR / "risk.yaml", RiskConfig)
-    assert 0 < cfg.max_risk_per_trade_pct <= Decimal("0.01")
+    assert 0 < cfg.max_risk_per_trade_pct <= Decimal("0.05")
 
 
 def test_shipped_config_ladders_across_distinct_expirations():

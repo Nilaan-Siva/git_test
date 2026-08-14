@@ -70,9 +70,11 @@ def main() -> int:
         type=Decimal,
         default=None,
         help=(
-            "keep only strikes on this grid. MUST divide strategies.yaml's spread_width, or the "
-            "protective leg will not be in the cache and every proposal dies on "
-            "long_strike_not_listed. Defaults to the GCD of the configured spread widths."
+            "keep only strikes on this grid. put_credit_spread targets its width as a fraction "
+            "of each underlying's spot price, not a fixed points value, so a fine grid (default "
+            "1) is what lets it find a close listed strike on every ticker. If iron_condor is "
+            "enabled this MUST still divide its fixed spread_width, or its protective leg will "
+            "not be in the cache and every proposal dies on long_strike_not_listed."
         ),
     )
     parser.add_argument(
@@ -96,18 +98,19 @@ def main() -> int:
     strategies = load_yaml_config(CONFIG_DIR / "strategies.yaml", StrategiesConfig)
     tickers = args.tickers or universe.tickers
 
-    # A strike grid coarser than the spread width silently produces a cache the strategy cannot
-    # trade: it finds a short strike, looks `width` points below for the protective leg, and
-    # never finds one. Every day rejects with long_strike_not_listed and the backtest reports
-    # zero trades as though no setup qualified. Derive the grid from config rather than let the
-    # two drift apart.
-    widths = [p.spread_width for p in (strategies.put_credit_spread, strategies.iron_condor) if p.enabled]
-    required_step = min(widths) if widths else Decimal("1")
+    # put_credit_spread no longer has a fixed spread_width to derive a grid from -- it targets a
+    # width as a fraction of spot and searches the real chain for the nearest listed strike, so a
+    # fine default grid (1) is what lets that search actually find something close on every
+    # ticker. iron_condor is the one strategy still keyed to a fixed points width; if it's
+    # enabled, a grid coarser than that width silently produces a cache it can never trade (it
+    # looks `width` points from its short strike and finds nothing there), so that check stays.
+    condor_width = strategies.iron_condor.spread_width if strategies.iron_condor.enabled else None
+    required_step = condor_width if condor_width is not None else Decimal("1")
     strike_step = args.strike_step if args.strike_step is not None else required_step
-    if strike_step > 0 and any(w % strike_step != 0 for w in widths):
+    if condor_width is not None and strike_step > 0 and condor_width % strike_step != 0:
         logger.error(
-            f"--strike-step {strike_step} does not divide every enabled spread_width {widths}; "
-            f"the protective leg would be missing from the cache. Use {required_step} or a divisor of it."
+            f"--strike-step {strike_step} does not divide iron_condor's spread_width {condor_width}; "
+            f"its protective leg would be missing from the cache. Use {required_step} or a divisor of it."
         )
         return 1
 

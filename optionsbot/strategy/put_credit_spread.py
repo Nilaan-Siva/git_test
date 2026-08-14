@@ -10,7 +10,9 @@ The setup, all driven by strategies.yaml:
   * only when IV Rank is high enough that the premium pays for the risk
   * short strike at roughly 30-delta -- around a 70% chance of expiring worthless
   * 30-50 DTE, where theta decay is meaningful but gamma risk is still tame
-  * a fixed strike width (1-wide by default, which is what makes this viable on a small account)
+  * a strike width targeted as a FRACTION of the underlying's price, not a fixed points value --
+    see StrategyParams.target_width_pct_of_spot for why. This is what lets the same strategy
+    trade a $60 ETF and a $700 one without hand-tuning a width per ticker.
 
 Exits are not this file's decision: they come from strategy/exits.py, driven by risk.yaml.
 """
@@ -23,7 +25,7 @@ from optionsbot.core.enums import Action, Right, StrategyName
 from optionsbot.core.models import Leg, OptionQuote, OrderIntent, Spread
 from optionsbot.strategy import filters
 from optionsbot.strategy.base import Strategy, StrategyContext
-from optionsbot.strategy.quoting import find_strike, select_expiration
+from optionsbot.strategy.quoting import nearest_protective_strike, select_expiration
 
 
 class PutCreditSpread(Strategy):
@@ -34,9 +36,6 @@ class PutCreditSpread(Strategy):
             return []
 
         for reason in (
-            filters.check_width_suits_underlying(
-                self.params.spread_width, ctx.chain.underlying_price, self.params
-            ),
             filters.check_iv_rank(ctx.iv_rank, self.params),
             filters.check_earnings_blackout(ctx.as_of, ctx.earnings_dates, ctx.earnings_blackout_days),
             filters.check_not_downtrend(ctx.underlying_closes, period=self.params.trend_sma_period),
@@ -57,13 +56,33 @@ class PutCreditSpread(Strategy):
         if short_quote is None:
             return []
 
-        long_strike = short_quote.contract.strike - self.params.spread_width
-        if long_strike <= 0:
-            ctx.note(f"invalid_long_strike: {short_quote.contract.strike} - {self.params.spread_width} <= 0")
-            return []
-        long_quote = find_strike(ctx.chain.quotes, expiration=expiration, right=Right.PUT, strike=long_strike)
+        # Target a dollar width proportional to spot, then take whichever LISTED strike sits
+        # closest to it -- different tickers grid their strikes differently ($1 near the money
+        # on SPY, $5 or $10 elsewhere), so a strategy that wants "roughly X% of spot wide" has
+        # to search the real chain rather than compute a strike and demand an exact match.
+        spot = ctx.chain.underlying_price
+        target_width = max(Decimal("1"), (spot * self.params.target_width_pct_of_spot).quantize(Decimal("1")))
+        target_long_strike = short_quote.contract.strike - target_width
+        long_quote = nearest_protective_strike(
+            ctx.chain.quotes,
+            expiration=expiration,
+            right=Right.PUT,
+            short_strike=short_quote.contract.strike,
+            target_strike=target_long_strike,
+        )
         if long_quote is None:
-            ctx.note(f"long_strike_not_listed: no {long_strike} put expiring {expiration.isoformat()}")
+            ctx.note(
+                f"no_protective_strike: no put below {short_quote.contract.strike} expiring "
+                f"{expiration.isoformat()}"
+            )
+            return []
+
+        # Check the width the chain actually offered, not the target -- a thin strike grid can
+        # hand back something much wider than intended, and that is what has to clear the cap.
+        actual_width = short_quote.contract.strike - long_quote.contract.strike
+        reason = filters.check_width_suits_underlying(actual_width, spot, self.params)
+        if reason:
+            ctx.note(reason)
             return []
 
         reason = filters.check_legs_liquidity([short_quote, long_quote], ctx.universe)
@@ -110,8 +129,8 @@ class PutCreditSpread(Strategy):
                 max_loss_per_contract=max_loss,
                 max_profit_per_contract=max_profit,
                 rationale=(
-                    f"{ctx.underlying} {self.params.spread_width}-wide put credit spread, "
-                    f"short {short_quote.contract.strike} / long {long_strike}, "
+                    f"{ctx.underlying} {width}-wide put credit spread, "
+                    f"short {short_quote.contract.strike} / long {long_quote.contract.strike}, "
                     f"{(expiration - ctx.as_of).days} DTE, "
                     f"short delta {abs(short_quote.delta or Decimal('0')):.2f}, "
                     f"IVR {ctx.iv_rank if ctx.iv_rank is None else round(ctx.iv_rank, 1)}, "

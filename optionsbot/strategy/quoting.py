@@ -133,3 +133,44 @@ def find_strike(
         if contract.expiration == expiration and contract.right == right and contract.strike == strike:
             return quote
     return None
+
+
+def nearest_protective_strike(
+    quotes: Iterable[OptionQuote],
+    *,
+    expiration: date,
+    right: Right,
+    short_strike: Decimal,
+    target_strike: Decimal,
+) -> Optional[OptionQuote]:
+    """The listed strike closest to `target_strike` that still protects `short_strike`.
+
+    "Protects" means strictly further out of the money than the short leg: below it for a put
+    (a long put caps a short put's downside only if it sits lower), above it for a call. Unlike
+    `find_strike`, this does not require an exact match -- different tickers list strikes on
+    different grids ($1 near the money on SPY, $5 or $10 on cheaper or more expensive names), so
+    a strategy that wants "the width closest to X dollars" has to search the real grid rather
+    than compute one and demand it exists verbatim.
+
+    Returns None if no listed strike protects the short leg at all, which the caller should
+    treat as "this expiration has no usable spread here" rather than a data error.
+    """
+    if right == Right.PUT:
+        candidates = [
+            q
+            for q in quotes
+            if q.contract.expiration == expiration
+            and q.contract.right == right
+            and q.contract.strike < short_strike
+        ]
+    else:
+        candidates = [
+            q
+            for q in quotes
+            if q.contract.expiration == expiration
+            and q.contract.right == right
+            and q.contract.strike > short_strike
+        ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda q: abs(q.contract.strike - target_strike))

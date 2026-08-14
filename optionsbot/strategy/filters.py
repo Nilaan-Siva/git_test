@@ -106,8 +106,9 @@ def check_width_suits_underlying(
     leg is nearly worthless and the position behaves like a naked short put wearing a spread's
     name. Max loss is still bounded, so no risk limit catches it; it simply is not the trade.
 
-    This fires before anything else looks at the chain, so the journal says "this ticker does not
-    suit the configured width" rather than burying it in a vague strike-selection failure.
+    Callers that pick a width dynamically (see put_credit_spread.py) should check the width the
+    chain actually offered, not a target -- a thin strike grid can hand back something wider
+    than intended, and that is what has to clear this cap.
     """
     if underlying_price <= 0:
         return "invalid_underlying_price"

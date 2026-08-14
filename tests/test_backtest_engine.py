@@ -127,9 +127,17 @@ def test_final_equity_equals_starting_equity_plus_realized_pnl(result):
 
 
 def test_commissions_are_charged_and_counted(result):
+    """Every position pays to open (two legs, $0.65/contract). It pays again to close, unless it
+    expired worthless -- settling at zero needs no closing trade, so no closing commission is
+    charged. `total_commission` has to equal the sum of exactly that, position by position."""
     assert result.metrics.total_commission > 0
-    # two legs, two ways, $0.65 a contract -> $2.60 per single-contract round trip
-    assert result.metrics.total_commission >= Decimal("2.60") * result.metrics.trade_count
+    per_leg = Decimal("0.65")
+    expected = Decimal("0")
+    for position in result.closed_positions:
+        expired_worthless = position.close_reason == "expiration" and position.exit_price_per_share == 0
+        legs_charged = 2 if expired_worthless else 4
+        expected += per_leg * legs_charged * position.quantity
+    assert result.metrics.total_commission == expected
 
 
 def test_realized_pnl_is_net_of_commission(result):

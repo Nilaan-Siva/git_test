@@ -55,7 +55,22 @@ class StrategyParams(BaseModel):
     short_delta_target: Decimal = Decimal("0.30")
     short_delta_tolerance: Decimal = Decimal("0.05")
     min_iv_rank: Decimal = Decimal("30")
+    # Legacy fixed width, still used by iron_condor and wheel (both disabled). put_credit_spread
+    # no longer reads this -- see target_width_pct_of_spot below for why a single points value
+    # can't serve every ticker at once.
     spread_width: Decimal = Decimal("1")
+    # put_credit_spread's actual width control. A spread width in *points* means something
+    # completely different depending on the underlying's price -- 3 points is 0.4% of a $772
+    # name and 5% of a $58 one -- so no single fixed width serves a universe spanning both. This
+    # instead targets a width as a FRACTION of spot, then the strategy finds whichever listed
+    # strike sits closest to that dollar amount. The same setting therefore produces a tight,
+    # sensible spread on a $60 ETF and a $700 one alike, which is what makes a wide universe of
+    # differently-priced tickers workable without hand-tuning a width per name.
+    #
+    # 0.4% was the width that worked on live SPY pricing (3/772 = 0.39%) before this became
+    # dynamic; kept as the default because that is the one width this project has real evidence
+    # on. Widening it raises credit and risk together for cheap and expensive names alike.
+    target_width_pct_of_spot: Decimal = Decimal("0.004")
     # A credit too small relative to the width isn't worth the risk or the four commission
     # charges it takes to open and close: on a 1-wide spread, $0.15 is ~$15 of max profit
     # against ~$2.60 of round-trip commission. Below this floor the strategy stands down.
