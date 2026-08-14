@@ -463,3 +463,131 @@ def test_monthly_expirations_respects_the_window_edges():
 def test_monthly_expirations_crosses_a_year_boundary():
     result = monthly_expirations(date(2026, 11, 1), date(2027, 2, 28))
     assert result == [date(2026, 11, 20), date(2026, 12, 18), date(2027, 1, 15), date(2027, 2, 19)]
+
+
+# ---- transient network failures -------------------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {"results": []}
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _no_sleep(monkeypatch):
+    import optionsbot.data.providers.polygon as mod
+
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+
+
+def test_a_read_timeout_is_retried_rather_than_killing_the_run(monkeypatch):
+    """The failure that ended a ten-hour backfill at hour four.
+
+    Over thousands of calls a transient timeout is a certainty, not an edge case. It used to
+    propagate as a raw requests exception straight out of build_chains, discarding every
+    contract fetched so far.
+    """
+    import requests
+
+    from optionsbot.data.providers.polygon import _RequestsHttpClient
+
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.Timeout("read timed out")
+        return FakeResponse(payload={"results": [{"t": JUN10, "c": 1.0}]})
+
+    monkeypatch.setattr(requests, "get", flaky)
+    client = _RequestsHttpClient(api_key="k", calls_per_minute=0)
+
+    assert client.get("https://example/x", {}) == {"results": [{"t": JUN10, "c": 1.0}]}
+    assert calls["n"] == 3
+
+
+def test_a_dropped_connection_is_retried(monkeypatch):
+    import requests
+
+    from optionsbot.data.providers.polygon import _RequestsHttpClient
+
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.ConnectionError("connection reset")
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "get", flaky)
+    assert _RequestsHttpClient(api_key="k", calls_per_minute=0).get("https://example/x", {}) == {"results": []}
+
+
+def test_server_errors_are_retried_but_client_errors_are_not(monkeypatch):
+    """A 500 is worth another attempt; a 400 will fail identically forever and retrying it only
+    burns slots against a four-per-minute budget."""
+    import requests
+
+    from optionsbot.data.providers.polygon import _RequestsHttpClient
+
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse(status_code=503) if calls["n"] == 1 else FakeResponse()
+
+    monkeypatch.setattr(requests, "get", flaky)
+    assert _RequestsHttpClient(api_key="k", calls_per_minute=0).get("https://example/x", {}) == {"results": []}
+    assert calls["n"] == 2
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse(status_code=400))
+    with pytest.raises(RuntimeError):
+        _RequestsHttpClient(api_key="k", calls_per_minute=0).get("https://example/x", {})
+
+
+def test_exhausted_retries_raise_the_error_build_chains_knows_how_to_skip(monkeypatch):
+    """DataUnavailableError, not a raw network exception -- that is what lets build_chains drop
+    one unreachable contract and carry on rather than losing the whole backfill."""
+    import requests
+
+    from optionsbot.data.providers.polygon import _RequestsHttpClient
+
+    _no_sleep(monkeypatch)
+
+    def always_timeout(url, params=None, headers=None, timeout=None):
+        raise requests.Timeout("read timed out")
+
+    monkeypatch.setattr(requests, "get", always_timeout)
+    client = _RequestsHttpClient(api_key="k", calls_per_minute=0, max_retries=3)
+
+    with pytest.raises(DataUnavailableError, match="Timeout"):
+        client.get("https://example/x", {})
+
+
+def test_a_permission_error_fails_immediately_without_burning_retries(monkeypatch):
+    import requests
+
+    from optionsbot.data.providers.polygon import _RequestsHttpClient
+
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def forbidden(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse(status_code=403, text="not entitled")
+
+    monkeypatch.setattr(requests, "get", forbidden)
+    with pytest.raises(DataUnavailableError, match="not entitled"):
+        _RequestsHttpClient(api_key="k", calls_per_minute=0).get("https://example/x", {})
+    assert calls["n"] == 1

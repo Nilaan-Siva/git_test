@@ -82,7 +82,9 @@ class _RequestsHttpClient:
     """
 
     api_key: str
-    timeout_seconds: float = 20.0
+    # Generous: a slow response is far cheaper than a retry, which costs a full slot
+    # against a 4-per-minute budget.
+    timeout_seconds: float = 45.0
     calls_per_minute: int = DEFAULT_THROTTLE_CALLS_PER_MINUTE
     max_retries: int = 6
     _call_times: list[float] = field(default_factory=list)
@@ -101,25 +103,57 @@ class _RequestsHttpClient:
         self._call_times.append(time.monotonic())
 
     def get(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        """One request, with retries for everything transient.
+
+        A backfill makes thousands of calls over many hours, so "rare" network failures are
+        certainties, not edge cases: a single read timeout once killed a ten-hour run outright.
+        Timeouts, dropped connections and 5xx responses are all retried with backoff; only a
+        genuine client error (a bad request, a permission failure) gives up immediately, because
+        retrying those just wastes the rate limit on a request that will never succeed.
+
+        Exhausting the retries raises DataUnavailableError rather than a raw network exception,
+        which is what lets `build_chains` skip the one bad contract and keep going instead of
+        discarding the whole run.
+        """
         import requests  # local import: keeps `requests` an optional ("data" extra) dependency
 
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        last_error = "unknown"
         for attempt in range(self.max_retries):
             self._throttle()
-            resp = requests.get(url, params=params, headers=headers, timeout=self.timeout_seconds)
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.timeout_seconds)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                time.sleep(min(60, 5 * 2**attempt))
+                continue
+
             if resp.status_code == 429:
                 # The limit is per rolling minute, so a full minute of silence is what actually
                 # clears it -- exponential backoff from a few seconds just burns retries against
                 # a window that has not moved. Reset the local ledger too, or the throttle keeps
                 # pacing against calls the server has already forgotten.
                 self._call_times.clear()
+                last_error = "rate limited (429)"
                 time.sleep(65)
                 continue
             if resp.status_code == 403:
                 raise DataUnavailableError(f"not entitled to {url}: {resp.text[:200]}")
+            if resp.status_code >= 500:
+                last_error = f"server error {resp.status_code}"
+                time.sleep(min(60, 5 * 2**attempt))
+                continue
             resp.raise_for_status()
-            return resp.json()
-        raise DataUnavailableError(f"rate limited after {self.max_retries} attempts: {url}")
+
+            try:
+                return resp.json()
+            except ValueError as exc:
+                # A truncated or non-JSON body is a transport failure wearing a 200.
+                last_error = f"malformed JSON: {exc}"
+                time.sleep(min(60, 5 * 2**attempt))
+                continue
+
+        raise DataUnavailableError(f"giving up after {self.max_retries} attempts ({last_error}): {url}")
 
 
 def _to_decimal(value: float | int | None, places: int = 4) -> Decimal | None:
