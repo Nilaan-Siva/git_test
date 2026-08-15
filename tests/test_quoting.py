@@ -19,6 +19,7 @@ from optionsbot.strategy.quoting import (
     contract_key,
     find_strike,
     intrinsic_value,
+    nearest_protective_strike,
     quote_index,
     reference_price,
     select_expiration,
@@ -248,6 +249,61 @@ def test_find_strike_matches_exactly_and_returns_none_otherwise():
     assert found is not None and found.contract.strike == Decimal("445")
     assert find_strike(chain.quotes, expiration=EXP, right=Right.PUT, strike=Decimal("444")) is None
     assert find_strike(chain.quotes, expiration=EXP, right=Right.CALL, strike=Decimal("445")) is None
+
+
+# ---- nearest protective strike ----------------------------------------------------------------
+
+
+def test_nearest_protective_strike_prefers_an_exact_match():
+    quotes = [quote("448", last="3.50"), quote("447", last="3.20"), quote("445", last="2.80")]
+    found = nearest_protective_strike(
+        quotes, expiration=EXP, right=Right.PUT, short_strike=Decimal("450"), target_strike=Decimal("447")
+    )
+    assert found is not None and found.contract.strike == Decimal("447")
+
+
+def test_nearest_protective_strike_falls_back_to_the_closest_listed_strike_on_a_gap():
+    """No 447 listed -- 445 is the nearest still-protective strike, not a rejection. Different
+    tickers grid their strikes differently, so 'closest to the target' has to search the real
+    chain rather than demand an exact match."""
+    quotes = [quote("445", last="2.80"), quote("440", last="1.90")]
+    found = nearest_protective_strike(
+        quotes, expiration=EXP, right=Right.PUT, short_strike=Decimal("450"), target_strike=Decimal("447")
+    )
+    assert found is not None and found.contract.strike == Decimal("445")
+
+
+def test_nearest_protective_strike_only_considers_strikes_that_protect_the_short():
+    """A put below 447 is closer to the target than the listed 451 -- but 451 sits ABOVE the
+    450 short, so it wouldn't cap a short put's downside at all and must never be picked."""
+    quotes = [quote("451", last="5.50"), quote("445", last="2.80")]
+    found = nearest_protective_strike(
+        quotes, expiration=EXP, right=Right.PUT, short_strike=Decimal("450"), target_strike=Decimal("448")
+    )
+    assert found is not None and found.contract.strike == Decimal("445")
+
+
+def test_nearest_protective_strike_is_none_when_nothing_protects_the_short():
+    quotes = [quote("451", last="5.50"), quote("455", last="7.00")]
+    found = nearest_protective_strike(
+        quotes, expiration=EXP, right=Right.PUT, short_strike=Decimal("450"), target_strike=Decimal("448")
+    )
+    assert found is None
+
+
+def test_nearest_protective_strike_on_a_call_wing_looks_above_the_short():
+    """The mirror case: a call's protective leg sits ABOVE its short, the opposite direction
+    from a put -- exercising the branch no put_credit_spread test ever reaches. 448 is much
+    closer to the target than 455 is, but it sits BELOW the 450 short and so doesn't protect it
+    at all; picking it anyway would be the bug this test exists to catch."""
+    quotes = [
+        quote("448", last="6.00", right=Right.CALL),  # below the short -- must not be picked
+        quote("455", last="4.00", right=Right.CALL),
+    ]
+    found = nearest_protective_strike(
+        quotes, expiration=EXP, right=Right.CALL, short_strike=Decimal("450"), target_strike=Decimal("449")
+    )
+    assert found is not None and found.contract.strike == Decimal("455")
 
 
 # ---- ATM implied volatility ------------------------------------------------------------------
