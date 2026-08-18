@@ -56,6 +56,17 @@ UNDERLYING = "SPY"
 BUDGET_FRACTION = Decimal("0.95")
 CONTRACT_MULTIPLIER = 100
 
+# The index-level "fundamentals": the macro-event calendar, verified through the experiment
+# window (ends ~Sep 17 2026). Pre-open releases (jobs, CPI) land at 8:30 ET so the opening
+# range absorbs them -- often the best trend days, journalled but traded. The FOMC decision
+# lands MID-SESSION at 14:00 ET, hours after our entry, and routinely reverses morning
+# breakouts violently: that day is skipped outright.
+EVENT_CALENDAR = {
+    "2026-09-04": ("note", "jobs report 8:30 ET pre-open (Aug employment situation)"),
+    "2026-09-11": ("note", "CPI release 8:30 ET pre-open, last print before the Sep FOMC"),
+    "2026-09-16": ("skip", "FOMC rate decision 14:00 ET mid-session -- whipsaw risk, day skipped"),
+}
+
 
 def load_state() -> dict:
     return json.loads(STATE_FILE.read_text())
@@ -116,6 +127,12 @@ def mode_open() -> int:
         save_state(state)
         print("Tue/Thu skipped by the ORB day-of-week filter")
         return 0
+    event = EVENT_CALENDAR.get(today.isoformat())
+    if event and event[0] == "skip":
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_macro_event", "detail": event[1]})
+        save_state(state)
+        print(f"macro-event skip: {event[1]}")
+        return 0
     if not trading.get_clock().is_open:
         journal({"day": state["day"], "mode": "moonshot_open", "action": "market_closed"})
         save_state(state)
@@ -147,10 +164,30 @@ def mode_open() -> int:
     or_low = min(b.low for b in range_bars)
     spot = float(minute_bars[-1].close)
 
-    if spot > or_high:
+    # Session VWAP -- the standard technical confirmation for ORB entries. A breakout the
+    # volume-weighted tape disagrees with is far more likely to be a false break.
+    vol_total = sum(b.volume for b in minute_bars) or 1
+    vwap = sum(((b.high + b.low + b.close) / 3) * b.volume for b in minute_bars) / vol_total
+
+    if spot > or_high and spot > vwap:
         direction = "call"
-    elif spot < or_low:
+    elif spot < or_low and spot < vwap:
         direction = "put"
+    elif spot > or_high or spot < or_low:
+        journal(
+            {
+                "day": state["day"],
+                "mode": "moonshot_open",
+                "action": "skip_breakout_against_vwap",
+                "or_high": or_high,
+                "or_low": or_low,
+                "vwap": round(vwap, 4),
+                "spot": spot,
+            }
+        )
+        save_state(state)
+        print(f"breakout unconfirmed by VWAP ({vwap:.2f}); skipped")
+        return 0
     else:
         journal(
             {
