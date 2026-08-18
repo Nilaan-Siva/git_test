@@ -43,6 +43,7 @@ from optionsbot.data.providers.polygon import (
     DEFAULT_THROTTLE_CALLS_PER_MINUTE,
     PolygonProvider,
     monthly_expirations,
+    weekly_expirations,
 )
 from optionsbot.ops.logging import configure_logging, get_logger
 
@@ -80,6 +81,16 @@ def main() -> int:
         "--puts-only",
         action="store_true",
         help="fetch puts only -- halves the backfill; enough for put credit spreads, not condors",
+    )
+    parser.add_argument(
+        "--weeklies",
+        action="store_true",
+        help=(
+            "fetch every Friday expiration instead of only third Fridays -- roughly 4x the "
+            "expirations, so ~4x the API budget on a fresh ticker. Combine with --force so "
+            "already-cached days get their chains rebuilt with the weekly expirations included; "
+            "the per-contract bar cache keeps previously fetched monthly contracts free."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="print the API-call estimate and exit")
     parser.add_argument("--force", action="store_true", help="refetch days already cached")
@@ -121,7 +132,8 @@ def main() -> int:
         logger.warning(f"free tier caps history at 2 years; clamping start {start} -> {earliest}")
         start = earliest
 
-    expirations = monthly_expirations(start + timedelta(days=25), end + timedelta(days=60))
+    expiration_fn = weekly_expirations if args.weeklies else monthly_expirations
+    expirations = expiration_fn(start + timedelta(days=25), end + timedelta(days=60))
     rights = (Right.PUT,) if args.puts_only else None
     n_rights = 1 if args.puts_only else 2
 
@@ -138,7 +150,8 @@ def main() -> int:
     # every ticker is SPY-priced and overestimating the cheap ones by 5-10x.
     band = provider.strike_band_below + provider.strike_band_above
     logger.info(
-        f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} monthly expirations, "
+        f"plan: {len(tickers)} ticker(s), {start}..{end}, {len(expirations)} "
+        f"{'weekly' if args.weeklies else 'monthly'} expirations, "
         f"strike step {strike_step}, {'puts only' if args.puts_only else 'puts and calls'}"
     )
     total = 0

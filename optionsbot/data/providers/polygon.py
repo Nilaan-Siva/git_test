@@ -195,6 +195,29 @@ def monthly_expirations(start: date, end: date) -> list[date]:
     return out
 
 
+def weekly_expirations(start: date, end: date) -> list[date]:
+    """Every Friday in [start, end] -- the weekly expiration ladder, monthlies included.
+
+    This exists to fix an entry-frequency ceiling, not to trade shorter-dated options: with only
+    twelve third-Fridays a year, most trading days have NO expiration sitting in a 30-50 DTE
+    entry window, and the strategy sits out regardless of how good conditions are (it was the
+    single largest no-trade reason in the 18-month backtests). A Friday every week means nearly
+    every day has a candidate expiration at the same DTE the strategy already trades.
+
+    Fridays only, deliberately: SPY also lists Monday/Wednesday expirations, but those carry a
+    fraction of the open interest and would triple the API budget for strikes a liquidity-gated
+    strategy mostly cannot trade anyway. Monthlies are third Fridays, so they are a natural
+    subset -- no deduplication needed against monthly_expirations.
+    """
+    first_friday = start + timedelta(days=(4 - start.weekday()) % 7)
+    out: list[date] = []
+    cursor = first_friday
+    while cursor <= end:
+        out.append(cursor)
+        cursor += timedelta(days=7)
+    return out
+
+
 class PolygonProvider(ChainProvider):
     def __init__(
         self,

@@ -18,7 +18,7 @@ import pytest
 
 from optionsbot.core.enums import Right
 from optionsbot.data.providers.base import DataUnavailableError
-from optionsbot.data.providers.polygon import PolygonProvider, monthly_expirations
+from optionsbot.data.providers.polygon import PolygonProvider, monthly_expirations, weekly_expirations
 
 # Real timestamps captured from the live API: epoch ms at **midnight Eastern**, not UTC
 # midnight. 1781064000000 is 2026-06-10 00:00 EDT (04:00 UTC).
@@ -458,6 +458,24 @@ def test_monthly_expirations_are_third_fridays():
 
 def test_monthly_expirations_respects_the_window_edges():
     assert monthly_expirations(date(2026, 1, 17), date(2026, 2, 19)) == []
+
+
+def test_weekly_expirations_are_every_friday_and_contain_the_monthlies():
+    weeklies = weekly_expirations(date(2026, 1, 1), date(2026, 4, 30))
+    assert all(d.weekday() == 4 for d in weeklies)
+    assert [(b - a).days for a, b in zip(weeklies, weeklies[1:])] == [7] * (len(weeklies) - 1)
+    assert weeklies[0] == date(2026, 1, 2)
+    # Third Fridays are ordinary Fridays, so the monthly ladder must be a strict subset -- this
+    # is what lets --weeklies replace (not supplement) the monthly list with no deduplication.
+    monthlies = monthly_expirations(date(2026, 1, 1), date(2026, 4, 30))
+    assert set(monthlies) < set(weeklies)
+
+
+def test_weekly_expirations_respects_the_window_edges():
+    # A window containing no Friday at all yields nothing rather than reaching outside it.
+    assert weekly_expirations(date(2026, 1, 3), date(2026, 1, 8)) == []  # Sat..Thu
+    # A window that IS a single Friday yields exactly that Friday.
+    assert weekly_expirations(date(2026, 1, 2), date(2026, 1, 2)) == [date(2026, 1, 2)]
 
 
 def test_monthly_expirations_crosses_a_year_boundary():
