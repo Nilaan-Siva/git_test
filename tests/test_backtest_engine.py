@@ -17,9 +17,11 @@ import pytest
 from optionsbot.backtest.engine import BacktestConfig, BacktestEngine
 from optionsbot.backtest.slippage import SlippageModel
 from optionsbot.config.schema import RiskConfig, StrategiesConfig, StrategyParams, UniverseConfig
-from optionsbot.core.models import Chain
+from optionsbot.core.enums import Action, Right, StrategyName
+from optionsbot.core.models import Chain, Leg, OptionContract, OptionQuote, Order, OrderIntent, Spread
 from optionsbot.data.providers.base import ChainProvider, DataUnavailableError
 from optionsbot.data.providers.synthetic import SyntheticChainProvider
+from optionsbot.strategy.quoting import quote_index
 from optionsbot.strategy.registry import build_enabled_strategies
 
 END = date(2026, 8, 13)
@@ -150,6 +152,79 @@ def test_realized_pnl_is_net_of_commission(result):
 
 def test_equity_curve_starts_at_the_configured_equity(result):
     assert result.equity_curve[0][1] == Decimal("25000") or result.equity_curve[0][0] >= START
+
+
+def test_opening_a_credit_spread_does_not_create_a_phantom_mark_to_market_gain():
+    """Regression test for a real bug: the mark seeded the instant a position opened used to
+    reuse the *opening* order's price, in the opening cash-flow-to-trader convention. Feeding
+    that straight into unrealized_pnl (which expects a *closing* price) computes
+    -(entry + entry) instead of ~0 -- for a credit spread (negative entry price) that is an
+    instant phantom GAIN of roughly 2x the credit received, with zero market movement, the
+    moment the position opens. It showed up as backtest equity spiking on every entry day and
+    then "crashing" back the next day as the mark corrected, tripping the drawdown halt on an
+    accounting artifact rather than a real loss.
+
+    The fix (see `_open_position`) marks a brand-new position the same way every later day does:
+    price the *closing* legs against that day's quotes, not the opening order's own price.
+    """
+    expiration = date(2026, 9, 18)
+    short = OptionQuote(
+        contract=OptionContract(underlying="SPY", expiration=expiration, strike=Decimal("440"), right=Right.PUT),
+        bid=Decimal("3.00"),
+        ask=Decimal("3.20"),
+    )
+    long = OptionQuote(
+        contract=OptionContract(underlying="SPY", expiration=expiration, strike=Decimal("435"), right=Right.PUT),
+        bid=Decimal("1.00"),
+        ask=Decimal("1.20"),
+    )
+    chain = Chain(underlying="SPY", as_of=START, underlying_price=Decimal("450"), quotes=[short, long])
+    quotes = quote_index(chain)
+
+    spread = Spread(
+        strategy=StrategyName.PUT_CREDIT_SPREAD,
+        underlying="SPY",
+        legs=[
+            Leg(contract=short.contract, action=Action.SELL_TO_OPEN),
+            Leg(contract=long.contract, action=Action.BUY_TO_OPEN),
+        ],
+    )
+    slippage = SlippageModel.pessimistic()
+    # A credit: selling the 440 (mid 3.10) and buying the 435 (mid 1.10) nets a ~2.00 credit,
+    # i.e. entry_price_per_share is negative in cash-flow-to-trader terms.
+    entry_price = slippage.fill_price_per_share(spread.legs, quotes)
+    assert entry_price is not None and entry_price < 0, "test setup should price this as a credit"
+
+    order = Order(intent_id="x", spread=spread, quantity=1, limit_price_per_share=entry_price)
+    intent = OrderIntent(
+        strategy=StrategyName.PUT_CREDIT_SPREAD,
+        spread=spread,
+        limit_price_per_share=entry_price,
+        max_loss_per_contract=Decimal("300"),
+        max_profit_per_contract=Decimal("200"),
+    )
+
+    engine = BacktestEngine(
+        provider=make_provider(),
+        strategies=[],
+        risk=RISK,
+        strategies_config=StrategiesConfig(),
+        universe=UNIVERSE,
+        slippage=slippage,
+        config=BacktestConfig(start=START, end=END, tickers=["SPY"], starting_equity=Decimal("25000")),
+    )
+    engine._open_position(order, intent, START, quotes)
+
+    # Nothing has moved -- the same quotes price the closing legs at (approximately) the credit
+    # just collected. Unrealized P&L right after opening should be a small number driven only by
+    # the bid/ask spread crossed on each side, not swing by anywhere near the ~$200+ (2x the
+    # ~$100/contract credit) the bug produced.
+    unrealized = engine._unrealized()
+    credit_collected = abs(entry_price) * spread.legs[0].contract.multiplier
+    assert abs(unrealized) < credit_collected, (
+        f"opening a position swung unrealized P&L by {unrealized}, as large as the "
+        f"{credit_collected} credit itself -- looks like the phantom mark-to-market bug is back"
+    )
 
 
 # ---- the risk manager is genuinely in the path ----------------------------------------------------

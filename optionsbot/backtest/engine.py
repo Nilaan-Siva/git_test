@@ -287,11 +287,13 @@ class BacktestEngine:
                     if not decision.approved or decision.order is None:
                         self._log(day, "veto", ticker, decision.reason, strategy=strategy.name.value)
                         continue
-                    self._open_position(decision.order, intent, day)
+                    self._open_position(decision.order, intent, day, quotes)
 
     # ---- position bookkeeping -------------------------------------------------------------
 
-    def _open_position(self, order: Order, intent: OrderIntent, day: date) -> None:
+    def _open_position(
+        self, order: Order, intent: OrderIntent, day: date, quotes: Mapping[ContractKey, OptionQuote]
+    ) -> None:
         commission = self.slippage.commission(order.spread.legs, order.quantity)
         position = Position(
             strategy=intent.strategy,
@@ -305,7 +307,16 @@ class BacktestEngine:
         self._cash -= commission
         self._total_commission += commission
         self._open_commission[position.id] = commission
-        self._marks[position.id] = order.limit_price_per_share
+        # The initial mark must be in the *closing* cash-flow convention -- what it would cost to
+        # liquidate right now -- exactly like every later day's mark (_manage_open_positions
+        # below). Reusing order.limit_price_per_share here used to seed the mark with the
+        # *opening* price instead: for a credit spread that flips the sign, so unrealized_pnl
+        # read as -(entry + entry) instead of ~0, showing an instant phantom gain of roughly
+        # 2x the credit received the moment a position opened (and the mirrored phantom loss
+        # for debit spreads). Falls back to the entry price only if the chain can't price the
+        # closing leg today, which should be rare given it just priced the opening leg.
+        initial_mark = self.slippage.fill_price_per_share(order.spread.closing_legs(), quotes)
+        self._marks[position.id] = initial_mark if initial_mark is not None else order.limit_price_per_share
         self._open.append(position)
         self._log(
             day,
