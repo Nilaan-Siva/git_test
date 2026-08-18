@@ -323,6 +323,39 @@ def mode_close() -> int:
 
     ledger = Decimal(state["ledger_cash"])
 
+    # Alpaca auto-liquidates expiring options from ~15:30 ET and can beat this run to the
+    # exit (it did on day 1). If the account no longer holds the contract, book the actual
+    # fill from order history instead of submitting a sell that 422s as a new short.
+    held = {p.symbol for p in trading.get_all_positions()}
+    if position["symbol"] not in held:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        fills = [
+            o
+            for o in trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=50))
+            if o.symbol == position["symbol"] and str(o.side) == "OrderSide.SELL" and o.filled_avg_price
+        ]
+        if fills:
+            fill_price = Decimal(str(fills[0].filled_avg_price))
+            proceeds = (fill_price * CONTRACT_MULTIPLIER).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            note = f"reconciled: {position['symbol']} sold @ {fill_price} by broker auto-liquidation"
+        else:
+            proceeds = Decimal("0")  # expired worthless with no closing fill found
+            note = f"reconciled: {position['symbol']} expired/removed with no sell fill found; proceeds 0"
+        pnl = proceeds - Decimal(position["entry_cost"])
+        ledger += proceeds
+        state["ledger_cash"] = str(ledger)
+        state["position"] = None
+        save_state(state)
+        journal(
+            {
+                "day": state["day"], "mode": "moonshot_close", "action": note,
+                "proceeds": str(proceeds), "pnl": str(pnl), "ledger_cash": str(ledger),
+            }
+        )
+        print(f"day {state['day']}: {note} (P&L {pnl:+}); ledger {ledger}")
+        return 0
+
     # Did the resting +100% take-profit already bank the day?
     tp_id = position.get("tp_order_id")
     if tp_id:
