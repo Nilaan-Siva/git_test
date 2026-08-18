@@ -444,11 +444,67 @@ def mode_close() -> int:
     return 0
 
 
+def mode_stopcheck() -> int:
+    """Midday -50% stop, checked once (~12:33 ET). The signal backtest (backtest_moonshot.py)
+    shows this single check is worth ~6 points of average per-trade return -- the closest this
+    order-type-limited setup can get to the published strategy's continuous -50% stop."""
+    from alpaca.data.requests import OptionLatestQuoteRequest
+    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    trading, _, options = clients()
+    state = load_state()
+    position = state.get("position")
+    if not position or position.get("kind") != "option":
+        print("no option position; stop-check idle")
+        return 0
+
+    quote = options.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=[position["symbol"]])).get(
+        position["symbol"]
+    )
+    bid = Decimal(str(quote.bid_price)) if quote and quote.bid_price else Decimal("0")
+    entry = Decimal(position["entry_price"])
+    if bid > entry * Decimal("0.5"):
+        journal({"day": state["day"], "mode": "moonshot_stopcheck", "action": f"hold: bid {bid} > 50% of entry {entry}"})
+        print(f"stop-check: holding ({bid} vs entry {entry})")
+        return 0
+
+    tp_id = position.get("tp_order_id")
+    if tp_id:
+        try:
+            trading.cancel_order_by_id(tp_id)
+        except Exception:
+            pass
+    order = trading.submit_order(
+        MarketOrderRequest(symbol=position["symbol"], qty=int(position["qty"]), side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+    )
+    filled = wait_for_fill(trading, order.id)
+    proceeds = (Decimal(str(filled.filled_avg_price)) * CONTRACT_MULTIPLIER).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    pnl = proceeds - Decimal(position["entry_cost"])
+    ledger = Decimal(state["ledger_cash"]) + proceeds
+    state["ledger_cash"] = str(ledger)
+    state["position"] = None
+    save_state(state)
+    journal(
+        {
+            "day": state["day"], "mode": "moonshot_stopcheck",
+            "action": f"stop_loss: sold {position['symbol']} @ {filled.filled_avg_price} (bid had fallen past -50%)",
+            "proceeds": str(proceeds), "pnl": str(pnl), "ledger_cash": str(ledger),
+        }
+    )
+    print(f"day {state['day']}: midday stop hit, sold @ {filled.filled_avg_price} (P&L {pnl:+}); ledger {ledger}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["open", "close"], required=True)
+    parser.add_argument("--mode", choices=["open", "close", "stopcheck"], required=True)
     args = parser.parse_args()
-    return mode_open() if args.mode == "open" else mode_close()
+    if args.mode == "open":
+        return mode_open()
+    if args.mode == "stopcheck":
+        return mode_stopcheck()
+    return mode_close()
 
 
 if __name__ == "__main__":
