@@ -4,7 +4,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-/data/
+/data/*
+!/data/daily100/
 .env
 *.egg-info/
 build/
