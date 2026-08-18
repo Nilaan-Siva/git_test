@@ -6,17 +6,29 @@ THE RECORD: under 1% chance of reaching $1,000; the most likely outcome is losin
 the ledger over the month. This is a lottery machine with a journal, run on paper money as a
 live demonstration -- it is NOT the validated strategy in this repo (see PR #1 for that one).
 
-Mechanics, morning run (--mode open, ~9:57 ET):
-  * Direction: SPY's move from today's open (first ~25 minutes of tape). Up -> call, down -> put.
-  * Contract: today's expiration (or nearest), the strike CLOSEST to the money whose ask fits
-    ~95% of the ledger. One contract, market order. If nothing near the money is affordable,
-    the search walks further out-of-the-money -- worse odds, journalled as such -- and if even
-    the cheapest lottery ticket costs more than the ledger, the day is skipped, not forced.
-  * Max loss is the premium paid: a bad day loses ~95% of the ledger in one shot. That is the
-    aggression the user chose, stated plainly.
+Mechanics, morning run (--mode open, ~10:03 ET), upgraded to the Opening Range Breakout after
+a research sweep found it the one 0DTE entry with a documented backtested edge (options.cafe,
+299 trades: 42.5% win rate, +100% target vs -50% stop, +62.78% total; quantish.io's refined
+SPX variant reports a 2.2 Sharpe):
+  * Opening range: SPY's high/low over the first 30 minutes (9:30-10:00 ET).
+  * Enter ONLY on a breakout -- price above the range high buys a call, below the low buys a
+    put. Price still inside the range means a chop day: skip it, journal it. Chop days are
+    where 0DTE longs bleed to death on theta.
+  * Mon/Wed/Fri only -- the days that carried the edge in the backtest. Tue/Thu are skipped.
+  * Contract: nearest expiration, the strike CLOSEST to the money whose ask fits ~95% of the
+    ledger, walking out-of-the-money only as far as the budget forces; if even the cheapest
+    ticket is unaffordable, the day is skipped, not forced.
+  * Immediately after the fill, a +100% take-profit limit sell (2x entry) goes in for the day:
+    a double banks itself intraday without waiting for the afternoon run.
+  * Max loss is the premium paid: a bad day still loses ~95% of the ledger in one shot. That
+    is the aggression the user chose, stated plainly. (The backtest's -50% intraday stop is
+    NOT implemented -- Alpaca options orders here support market/limit only, and there is no
+    streaming process to watch the tape -- so this implementation is strictly riskier per
+    trade than the published version. Journalled as a known deviation.)
 
-Afternoon run (--mode close, ~15:47 ET): sell whatever is open at market, no exceptions --
-0DTE held to the bell expires to dust, and "it might come back" is how parlays die.
+Afternoon run (--mode close, ~15:47 ET): if the take-profit already filled, book it; else
+cancel the resting limit and sell at market, no exceptions -- 0DTE held to the bell expires to
+dust, and "it might come back" is how parlays die.
 
 The ledger/journal contract is identical to daily100.py: hard-capped ledger, append-only
 journal committed to git, equity marked from actual fills. Day 30 reports whatever the journal
@@ -89,7 +101,7 @@ def mode_open() -> int:
     from alpaca.data.requests import StockBarsRequest, OptionLatestQuoteRequest
     from alpaca.data.timeframe import TimeFrame
     from alpaca.data.enums import DataFeed
-    from alpaca.trading.requests import GetOptionContractsRequest, MarketOrderRequest
+    from alpaca.trading.requests import GetOptionContractsRequest, MarketOrderRequest, LimitOrderRequest
     from alpaca.trading.enums import ContractType, AssetStatus, OrderSide, TimeInForce
 
     trading, stocks, options = clients()
@@ -99,6 +111,11 @@ def mode_open() -> int:
         state["day"] += 1
     state["last_run_date"] = today.isoformat()
 
+    if today.weekday() not in (0, 2, 4):  # Mon/Wed/Fri carried the edge in the ORB backtest
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_day_of_week"})
+        save_state(state)
+        print("Tue/Thu skipped by the ORB day-of-week filter")
+        return 0
     if not trading.get_clock().is_open:
         journal({"day": state["day"], "mode": "moonshot_open", "action": "market_closed"})
         save_state(state)
@@ -110,18 +127,44 @@ def mode_open() -> int:
         print("position already open; skipping entry")
         return 0
 
-    # Direction from today's tape so far: last trade vs today's official open.
-    bars = stocks.get_stock_bars(
+    # Opening range: SPY minute bars for the first 30 minutes of today's session.
+    session_start = datetime.now(timezone.utc).replace(hour=13, minute=30, second=0, microsecond=0)
+    minute_bars = stocks.get_stock_bars(
         StockBarsRequest(
             symbol_or_symbols=UNDERLYING,
-            timeframe=TimeFrame.Day,
-            start=datetime.now(timezone.utc) - timedelta(days=4),
+            timeframe=TimeFrame.Minute,
+            start=session_start,
             feed=DataFeed.IEX,
         )
-    ).data[UNDERLYING]
-    today_bar = bars[-1]
-    spot, day_open = float(today_bar.close), float(today_bar.open)
-    direction = "call" if spot >= day_open else "put"
+    ).data.get(UNDERLYING, [])
+    range_bars = [b for b in minute_bars if b.timestamp < session_start + timedelta(minutes=30)]
+    if len(range_bars) < 10 or len(minute_bars) <= len(range_bars):
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_insufficient_bars"})
+        save_state(state)
+        print("not enough minute bars to define the opening range yet")
+        return 0
+    or_high = max(b.high for b in range_bars)
+    or_low = min(b.low for b in range_bars)
+    spot = float(minute_bars[-1].close)
+
+    if spot > or_high:
+        direction = "call"
+    elif spot < or_low:
+        direction = "put"
+    else:
+        journal(
+            {
+                "day": state["day"],
+                "mode": "moonshot_open",
+                "action": "skip_inside_opening_range",
+                "or_high": or_high,
+                "or_low": or_low,
+                "spot": spot,
+            }
+        )
+        save_state(state)
+        print(f"no breakout: spot {spot} inside opening range [{or_low}, {or_high}]; chop day skipped")
+        return 0
 
     # Today's expiration if it exists, else the nearest one this week.
     contracts_resp = trading.get_option_contracts(
@@ -180,8 +223,24 @@ def mode_open() -> int:
         MarketOrderRequest(symbol=chosen.symbol, qty=1, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
     )
     filled = wait_for_fill(trading, order.id)
-    cost = (Decimal(str(filled.filled_avg_price)) * CONTRACT_MULTIPLIER).quantize(Decimal("0.01"))
+    entry = Decimal(str(filled.filled_avg_price))
+    cost = (entry * CONTRACT_MULTIPLIER).quantize(Decimal("0.01"))
     ledger -= cost
+
+    # The backtested edge banks doubles: rest a +100% take-profit for the day right away.
+    tp_price = (entry * 2).quantize(Decimal("0.01"))
+    tp_order_id = None
+    try:
+        tp = trading.submit_order(
+            LimitOrderRequest(
+                symbol=chosen.symbol, qty=1, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                limit_price=float(tp_price),
+            )
+        )
+        tp_order_id = str(tp.id)
+    except Exception as exc:  # a missing TP is a degraded day, not a dead one
+        journal({"day": state["day"], "mode": "moonshot_open", "action": f"tp_order_failed: {exc}"})
+
     state["ledger_cash"] = str(ledger)
     state["position"] = {
         "kind": "option",
@@ -194,6 +253,8 @@ def mode_open() -> int:
         "direction": direction,
         "expiration": str(nearest_exp),
         "entry_date": today.isoformat(),
+        "tp_order_id": tp_order_id,
+        "tp_price": str(tp_price),
     }
     save_state(state)
     journal(
@@ -201,13 +262,13 @@ def mode_open() -> int:
             "day": state["day"],
             "mode": "moonshot_open",
             "action": f"bought 1x {chosen.symbol} ({direction}, strike {chosen.strike_price}, exp {nearest_exp}) @ {filled.filled_avg_price}",
-            "spot": spot,
-            "day_open": day_open,
+            "breakout": {"or_high": or_high, "or_low": or_low, "spot": spot},
             "cost": str(cost),
+            "tp_price": str(tp_price),
             "ledger_cash": str(ledger),
         }
     )
-    print(f"day {state['day']}: bought {chosen.symbol} ({direction}) @ {filled.filled_avg_price} (${cost}); ledger cash {ledger}")
+    print(f"day {state['day']}: bought {chosen.symbol} ({direction}) @ {filled.filled_avg_price} (${cost}), TP resting @ {tp_price}; ledger cash {ledger}")
     return 0
 
 
@@ -224,6 +285,37 @@ def mode_close() -> int:
         return 0
 
     ledger = Decimal(state["ledger_cash"])
+
+    # Did the resting +100% take-profit already bank the day?
+    tp_id = position.get("tp_order_id")
+    if tp_id:
+        tp_order = trading.get_order_by_id(tp_id)
+        if tp_order.status == "filled":
+            proceeds = (Decimal(str(tp_order.filled_avg_price)) * CONTRACT_MULTIPLIER).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            pnl = proceeds - Decimal(position["entry_cost"])
+            ledger += proceeds
+            state["ledger_cash"] = str(ledger)
+            state["position"] = None
+            save_state(state)
+            journal(
+                {
+                    "day": state["day"],
+                    "mode": "moonshot_close",
+                    "action": f"profit_target_hit: sold {position['symbol']} @ {tp_order.filled_avg_price}",
+                    "proceeds": str(proceeds),
+                    "pnl": str(pnl),
+                    "ledger_cash": str(ledger),
+                }
+            )
+            print(f"day {state['day']}: TP hit intraday, {position['symbol']} @ {tp_order.filled_avg_price} (P&L {pnl:+}); ledger {ledger}")
+            return 0
+        try:
+            trading.cancel_order_by_id(tp_id)  # clear the resting sell so the market order can't double-sell
+        except Exception:
+            pass
+
     order = trading.submit_order(
         MarketOrderRequest(
             symbol=position["symbol"], qty=int(position["qty"]), side=OrderSide.SELL, time_in_force=TimeInForce.DAY
