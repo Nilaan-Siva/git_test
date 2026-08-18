@@ -144,6 +144,38 @@ def mode_open() -> int:
         print("position already open; skipping entry")
         return 0
 
+    # Volatility regime gate -- the third leg of the SSRN three-filter stack (M/W/F + macro
+    # exclusion + VIX 15-25) that lifted ORB win rate from 46.8% to 65.4%. No VIX feed here,
+    # so 14-day ATR as a percent of price stands in: roughly, VIX 15 ~ 0.6% daily range and
+    # VIX 25 ~ 1.6%. Outside the band the edge decays -- dead tape fizzles, stressed tape is
+    # noise -- so those days are skipped, not sized down.
+    daily = stocks.get_stock_bars(
+        StockBarsRequest(
+            symbol_or_symbols=UNDERLYING,
+            timeframe=TimeFrame.Day,
+            start=datetime.now(timezone.utc) - timedelta(days=35),
+            feed=DataFeed.IEX,
+        )
+    ).data[UNDERLYING]
+    trs = [
+        max(b.high - b.low, abs(b.high - prev.close), abs(b.low - prev.close))
+        for prev, b in zip(daily, daily[1:])
+    ]
+    atr_pct = (sum(trs[-14:]) / len(trs[-14:])) / float(daily[-1].close) if len(trs) >= 14 else None
+    if atr_pct is not None and not (0.005 <= atr_pct <= 0.018):
+        journal(
+            {
+                "day": state["day"],
+                "mode": "moonshot_open",
+                "action": "skip_vol_regime",
+                "atr_pct": round(atr_pct, 5),
+                "detail": "14d ATR% outside the ~VIX-15-25 band where the ORB edge is documented",
+            }
+        )
+        save_state(state)
+        print(f"vol regime out of band (ATR {atr_pct:.2%}); skipped")
+        return 0
+
     # Opening range: SPY minute bars for the first 30 minutes of today's session.
     session_start = datetime.now(timezone.utc).replace(hour=13, minute=30, second=0, microsecond=0)
     minute_bars = stocks.get_stock_bars(
