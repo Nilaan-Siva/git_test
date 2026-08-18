@@ -99,7 +99,10 @@ def main() -> int:
 
     clock = trading.get_clock()
     state = load_state()
-    state["day"] += 1
+    today = date.today().isoformat()
+    if state.get("last_run_date") != today:
+        state["day"] += 1  # a rerun on the same calendar day is a check, not a new trading day
+    state["last_run_date"] = today
 
     # ---- signals -------------------------------------------------------------------------
     bars = data.get_stock_bars(
