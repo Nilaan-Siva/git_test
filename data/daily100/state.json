@@ -1,10 +1,11 @@
 {
   "started": "2026-08-18",
-  "ledger_cash": "2.01",
+  "ledger_cash": "2.02",
   "position": {
-    "symbol": "GLD",
-    "qty": "0.245384792",
-    "entry_price": "399.332",
+    "symbol": "SOXS",
+    "qty": "2.187625194",
+    "entry_price": "44.93",
+    "high_price": "44.93",
     "entry_date": "2026-08-18"
   },
   "day": 1,

@@ -40,12 +40,36 @@ STATE_DIR = REPO_ROOT / "data" / "daily100"
 STATE_FILE = STATE_DIR / "state.json"
 JOURNAL_FILE = STATE_DIR / "journal.jsonl"
 
-UNIVERSE = ["SPY", "QQQ", "IWM", "GLD", "TLT"]
 STARTING_LEDGER = Decimal("100.00")
 CASH_BUFFER = Decimal("0.98")  # invest at most 98% of ledger, so rounding can never overdraw
-STOP_LOSS_PCT = Decimal("0.03")
-MOMENTUM_DAYS = 20
-LOOKBACK_DAYS = 45  # calendar days of bars to fetch; > MOMENTUM_DAYS trading days
+LOOKBACK_DAYS = 45  # calendar days of bars to fetch; > the longest momentum window
+
+# Two experiment personalities, switched at the user's explicit request on day 1 (Aug 18) from
+# "disciplined" to "aggressive". Both stay defined so the day-30 report can compute what the
+# other would have done from the same journalled price data.
+#
+# aggressive is the user's chosen track and it is exactly what it looks like: 3x-leveraged
+# ETFs, a 5-day momentum chase, and a 10% trailing stop checked only once a day (an overnight
+# gap sails straight through it -- that is part of what "aggressive" costs). Stated expectation,
+# on the record when this mode was chosen: most likely -20% to -60% on the month; the chance of
+# reaching the user's $1,000 target is well under 1%. This mode exists to measure that honestly,
+# not to endorse it.
+MODES = {
+    "disciplined": {
+        "universe": ["SPY", "QQQ", "IWM", "GLD", "TLT"],
+        "momentum_days": 20,
+        "require_above_mean": True,
+        "stop_type": "fixed",  # exit 3% below entry
+        "stop_pct": Decimal("0.03"),
+    },
+    "aggressive": {
+        "universe": ["TQQQ", "SQQQ", "SOXL", "SOXS", "TNA", "UPRO"],
+        "momentum_days": 5,
+        "require_above_mean": False,
+        "stop_type": "trailing",  # exit 10% below the high-water mark since entry
+        "stop_pct": Decimal("0.10"),
+    },
+}
 
 
 def load_state() -> dict:
@@ -94,6 +118,13 @@ def main() -> int:
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=list(MODES), default="aggressive")
+    mode_name = parser.parse_args().mode
+    mode = MODES[mode_name]
+
     trading = TradingClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"], paper=True)
     data = StockHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
 
@@ -105,53 +136,70 @@ def main() -> int:
     state["last_run_date"] = today
 
     # ---- signals -------------------------------------------------------------------------
+    momentum_days = mode["momentum_days"]
+    position = state["position"]
+    # The held symbol may be from the OTHER mode (e.g. GLD held when the user switched tracks);
+    # always fetch it too, so it can be marked and its stop applied before rotation.
+    fetch_symbols = sorted(set(mode["universe"]) | ({position["symbol"]} if position else set()))
     bars = data.get_stock_bars(
         StockBarsRequest(
-            symbol_or_symbols=UNIVERSE,
+            symbol_or_symbols=fetch_symbols,
             timeframe=TimeFrame.Day,
             start=datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS),
             feed=DataFeed.IEX,
         )
     )
     closes: dict[str, list[float]] = {}
-    for symbol in UNIVERSE:
+    for symbol in fetch_symbols:
         series = bars.data.get(symbol, [])
         closes[symbol] = [b.close for b in series]
 
     signals = {}
     for symbol, series in closes.items():
-        if len(series) < MOMENTUM_DAYS + 1:
+        if len(series) < momentum_days + 1:
             continue
-        window = series[-(MOMENTUM_DAYS + 1) :]
+        window = series[-(momentum_days + 1) :]
         ret = (window[-1] - window[0]) / window[0]
         above_mean = window[-1] > sum(window) / len(window)
-        signals[symbol] = {"ret_20d": round(ret, 5), "above_20d_mean": above_mean, "last": window[-1]}
+        signals[symbol] = {"ret": round(ret, 5), "above_mean": above_mean, "last": window[-1]}
 
-    ranked = sorted(signals.items(), key=lambda kv: kv[1]["ret_20d"], reverse=True)
+    ranked = sorted(
+        ((s, v) for s, v in signals.items() if s in mode["universe"]),
+        key=lambda kv: kv[1]["ret"],
+        reverse=True,
+    )
     target = None
     if ranked:
         best, sig = ranked[0]
-        if sig["ret_20d"] > 0 and sig["above_20d_mean"]:
+        if sig["ret"] > 0 and (sig["above_mean"] or not mode["require_above_mean"]):
             target = best
 
     ledger = Decimal(state["ledger_cash"])
-    position = state["position"]
     actions: list[str] = []
 
     if not clock.is_open:
-        journal({"day": state["day"], "action": "market_closed", "signals": signals})
+        journal({"day": state["day"], "mode": mode_name, "action": "market_closed", "signals": signals})
         print("market closed -- no action; journalled signals only")
         save_state(state)
         return 0
 
-    # ---- stop-loss check (before anything else, so a broken position always exits) -------
+    # ---- stop check (before anything else, so a broken position always exits) ------------
     if position:
         last = signals.get(position["symbol"], {}).get("last")
         if last is not None:
-            entry = float(position["entry_price"])
-            if last < entry * float(Decimal("1") - STOP_LOSS_PCT):
-                actions.append(f"stop_loss: {position['symbol']} {last:.2f} < {entry:.2f} -3%")
-                target = None  # fall through to the sell path below and stay in cash today
+            if mode["stop_type"] == "trailing":
+                high = max(float(position.get("high_price", position["entry_price"])), last)
+                position["high_price"] = str(high)
+                stop_at = high * float(Decimal("1") - mode["stop_pct"])
+                if last < stop_at:
+                    actions.append(f"trailing_stop: {position['symbol']} {last:.2f} < {stop_at:.2f}")
+                    target = None  # sell below, stay in cash today
+            else:
+                entry = float(position["entry_price"])
+                stop_at = entry * float(Decimal("1") - mode["stop_pct"])
+                if last < stop_at:
+                    actions.append(f"stop_loss: {position['symbol']} {last:.2f} < {stop_at:.2f}")
+                    target = None
 
     # ---- rebalance -----------------------------------------------------------------------
     if position and (target != position["symbol"]):
@@ -172,24 +220,38 @@ def main() -> int:
     if target and position is None:
         notional = (ledger * CASH_BUFFER).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         if notional >= Decimal("1"):
-            order = trading.submit_order(
-                MarketOrderRequest(
-                    symbol=target,
-                    notional=float(notional),
-                    side=OrderSide.BUY,
-                    time_in_force=TimeInForce.DAY,
+            try:
+                order = trading.submit_order(
+                    MarketOrderRequest(
+                        symbol=target,
+                        notional=float(notional),
+                        side=OrderSide.BUY,
+                        time_in_force=TimeInForce.DAY,
+                    )
                 )
-            )
-            filled = wait_for_fill(trading, order.id)
-            cost = Decimal(str(filled.filled_avg_price)) * Decimal(str(filled.filled_qty))
-            ledger -= cost.quantize(Decimal("0.01"))
-            position = {
-                "symbol": target,
-                "qty": str(filled.filled_qty),
-                "entry_price": str(filled.filled_avg_price),
-                "entry_date": date.today().isoformat(),
-            }
-            actions.append(f"bought {filled.filled_qty} {target} @ {filled.filled_avg_price}")
+            except Exception:
+                # Not every leveraged ETF is fractionable; fall back to whole shares if one fits.
+                last = signals[target]["last"]
+                qty = int(float(notional) // last)
+                if qty < 1:
+                    actions.append(f"cannot_afford: {target} at {last:.2f} exceeds ledger; staying in cash")
+                    order = None
+                else:
+                    order = trading.submit_order(
+                        MarketOrderRequest(symbol=target, qty=qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                    )
+            if order is not None:
+                filled = wait_for_fill(trading, order.id)
+                cost = Decimal(str(filled.filled_avg_price)) * Decimal(str(filled.filled_qty))
+                ledger -= cost.quantize(Decimal("0.01"))
+                position = {
+                    "symbol": target,
+                    "qty": str(filled.filled_qty),
+                    "entry_price": str(filled.filled_avg_price),
+                    "high_price": str(filled.filled_avg_price),
+                    "entry_date": date.today().isoformat(),
+                }
+                actions.append(f"bought {filled.filled_qty} {target} @ {filled.filled_avg_price}")
 
     if not actions:
         actions.append(f"hold {position['symbol']}" if position else "hold cash (no qualifying trend)")
@@ -207,6 +269,7 @@ def main() -> int:
     journal(
         {
             "day": state["day"],
+            "mode": mode_name,
             "actions": actions,
             "signals": signals,
             "ledger_cash": str(ledger),
