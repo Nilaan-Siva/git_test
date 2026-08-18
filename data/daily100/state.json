@@ -1,18 +1,7 @@
 {
   "started": "2026-08-18",
-  "ledger_cash": "14.65",
-  "position": {
-    "kind": "option",
-    "symbol": "SPY260818P00769000",
-    "qty": "1",
-    "entry_price": "0.85",
-    "entry_cost": "85.00",
-    "strike": "769.0",
-    "spot_at_entry": 768.705,
-    "direction": "put",
-    "expiration": "2026-08-18",
-    "entry_date": "2026-08-18"
-  },
+  "ledger_cash": "125.65",
+  "position": null,
   "day": 1,
   "last_run_date": "2026-08-18"
 }
