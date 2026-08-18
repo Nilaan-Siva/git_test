@@ -27,19 +27,23 @@
 # risk.yaml's correlated_buckets, so adding them widens the set of independent signals the
 # strategy can find without the heat cap silently becoming a leveraged bet on one sector.
 
+# Cut back from twelve names to six after the corrected backtests showed the six cheap
+# additions (SLV, TLT, XLE, USO, XLF, EEM) were where every loss concentrated. The dynamic
+# width (target_width_pct_of_spot) fixed the *proportions* of a spread on a $58 ETF, but it
+# cannot fix the two costs that stay fixed in dollars: strikes come in $1 minimum increments,
+# and the ~$2.60 round-trip commission plus crossed bid/ask is the same whether the credit is
+# $15 or $150. On a $1-wide SLV spread passing the 15%-of-width credit floor, those fixed
+# costs are a 20-30% structural tax on every trade -- no entry filter can out-select that.
+# The six survivors are the names whose spot price makes a 0.4%-of-spot spread wide enough
+# in DOLLARS for fixed costs to be noise, which is the same conclusion the original
+# fixed-width universe reached from the other direction.
 tickers:
   - SPY   # S&P 500
   - QQQ   # Nasdaq 100
   - DIA   # Dow 30
   - IWM   # Russell 2000 small caps
   - XLK   # US technology sector
-  - GLD   # gold
-  - SLV   # silver -- precious metals, with GLD
-  - TLT   # 20+ year Treasuries
-  - XLE   # energy sector
-  - USO   # crude oil -- energy, with XLE
-  - XLF   # financials sector
-  - EEM   # emerging markets equity
+  - GLD   # gold -- the only name here uncorrelated with equities
 
 min_option_open_interest: 100
 min_option_volume_when_oi_unknown: 10
