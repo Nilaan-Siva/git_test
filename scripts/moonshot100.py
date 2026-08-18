@@ -122,6 +122,14 @@ def mode_open() -> int:
         state["day"] += 1
     state["last_run_date"] = today.isoformat()
 
+    # Kill switch in code, not just in scheduler prompts: below $5 no contract is affordable,
+    # the experiment is over, and no code path may quietly keep trading a dead ledger.
+    if Decimal(state["ledger_cash"]) < Decimal("5") and not state.get("position"):
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "kill_switch_ledger_exhausted"})
+        save_state(state)
+        print("KILL SWITCH: ledger below $5 -- experiment over, final report due")
+        return 0
+
     if today.weekday() not in (0, 2, 4):  # Mon/Wed/Fri carried the edge in the ORB backtest
         journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_day_of_week"})
         save_state(state)
