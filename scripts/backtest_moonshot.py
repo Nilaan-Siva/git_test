@@ -85,9 +85,12 @@ def day_signals(day_bars):
     vol = sum(b.volume for b in upto) or 1
     vwap = sum(((b.high + b.low + b.close) / 3) * b.volume for b in upto) / vol
     spot = upto[-1].close
+    session_avg_vol = (vol / len(upto)) or 1
+    recent_vol = sum(b.volume for b in upto[-3:]) / 3
     return {
         "open": open_px, "or_high": or_high, "or_low": or_low, "vwap": vwap,
         "spot": spot, "decision_idx": decision_idx,
+        "vol_ratio": recent_vol / session_avg_vol,
     }
 
 
@@ -150,7 +153,7 @@ def run_variant(days, name: str, stop_mode=None):
         if sig is None:
             continue
         direction = None
-        if name == "naive":
+        if name.startswith("naive"):
             direction = "call" if sig["spot"] >= sig["open"] else "put"
         else:
             if sig["spot"] > sig["or_high"]:
@@ -162,7 +165,13 @@ def run_variant(days, name: str, stop_mode=None):
                     direction = None
                 if direction == "put" and sig["spot"] >= sig["vwap"]:
                     direction = None
-            if direction and name == "full_stack" and not (weekday_ok and regime_ok):
+            if direction and name.startswith("full_stack") and not (weekday_ok and regime_ok):
+                direction = None
+            if direction and "str" in name:
+                edge = sig["or_high"] if direction == "call" else sig["or_low"]
+                if abs(sig["spot"] - edge) / sig["spot"] < 0.001:  # <0.1% past the line = a poke
+                    direction = None
+            if direction and "vol" in name and sig["vol_ratio"] < 1.5:
                 direction = None
         if direction is None:
             continue
@@ -202,6 +211,7 @@ def main() -> int:
     for name, stop in (
         ("naive", None), ("orb", None), ("orb_vwap", None), ("full_stack", None),
         ("full_stack", "midday"), ("full_stack", "cont"),
+        ("full_stack_str", "midday"), ("full_stack_vol", "midday"), ("full_stack_str_vol", "midday"),
     ):
         r = run_variant(days, name, stop_mode=stop)
         r["variant"] = f"{name}+{stop}" if stop else name

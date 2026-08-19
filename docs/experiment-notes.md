@@ -38,6 +38,27 @@ under M/W/F + macro exclusion + VIX 15–25); quantish.io refinement (2.2 Sharpe
 | Day | Date | Action | P&L | Ledger |
 |-----|------|--------|-----|--------|
 | 1 | Aug 18 | GLD flip +0.31, SOXS flip -0.66 (track-switch churn), SPY 769p 0.85→1.11 | +25.65 | **$125.65** |
+| 2 | Aug 19 | SPY 772c 1.04→0.29 (midday stop) | -75.00 | **$50.65** |
+
+## Day 2 lessons (Aug 19) — the false breakout post-mortem
+
+The 10:03 decision correctly said "chop day, no trade." The loss happened because deploying
+the multi-ticker scan mid-morning included re-running the entry at ~10:20, which caught the
+very FIRST poke above the range — SPY was back inside the range within a minute of the fill.
+The "real" breakout at 10:37 pushed on just 1.11x average volume (the head-fake signature),
+peaked at 11:01, and bled all afternoon; the midday stop sold at 0.29 and saved ~$25 vs
+holding to the close.
+
+1. **Process error, mine:** one decision per day means ONE. A code-level entry window
+   (09:50–10:50 ET) now makes late entries impossible rather than merely discouraged.
+2. **Pokes are noise:** entries now require ≥0.1% escape beyond the range edge — backtested,
+   improves avg/trade from -28.6% to -16.9% and win rate 28%→40% (5 trades/yr pass).
+3. **Volume filter rejected honestly:** modeled no benefit with a 10:03 snapshot proxy;
+   noted, not deployed. Over-filtering (both filters) = 2 trades/yr = useless for a 30-day run.
+4. **Variance drag, the third arrival of the sizing lesson:** the both-filters variant had a
+   POSITIVE average (+2.7%/trade) and still shrank $100 to $19.90 — a -95% loss needs +1,900%
+   to recover. Arithmetic average up, geometric outcome down. Bet size beats bet quality;
+   Kelly wept.
 
 ## Day 1 lessons (Aug 18)
 

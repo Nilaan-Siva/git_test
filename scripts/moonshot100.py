@@ -147,6 +147,12 @@ def mode_open() -> int:
         save_state(state)
         print("market closed; no entry")
         return 0
+    now_utc = datetime.now(timezone.utc)
+    if not (13 <= now_utc.hour < 15) or (now_utc.hour == 13 and now_utc.minute < 50) or (now_utc.hour == 14 and now_utc.minute > 50):
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_outside_entry_window"})
+        save_state(state)
+        print("outside the 09:50-10:50 ET entry window; the day-2 chase rule -- no late entries")
+        return 0
     if state.get("position"):
         journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_position_already_open"})
         save_state(state)
@@ -212,6 +218,7 @@ def mode_open() -> int:
         vol_total = sum(b.volume for b in minute_bars) or 1
         vwap = sum(((b.high + b.low + b.close) / 3) * b.volume for b in minute_bars) / vol_total
 
+        MIN_STRENGTH = 0.001  # 0.1% beyond the range edge; pokes are noise (see day 2)
         if spot > or_high and spot > vwap:
             direction, strength = "call", (spot - or_high) / spot
         elif spot < or_low and spot < vwap:
@@ -221,6 +228,9 @@ def mode_open() -> int:
             continue
         else:
             scan_notes[symbol] = f"inside_range [{or_low}, {or_high}] spot {spot}"
+            continue
+        if strength < MIN_STRENGTH:
+            scan_notes[symbol] = f"breakout_too_marginal ({strength:.4%} past the line)"
             continue
         candidates.append(
             {"symbol": symbol, "direction": direction, "strength": strength, "spot": spot,
