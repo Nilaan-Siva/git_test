@@ -52,7 +52,8 @@ STATE_DIR = REPO_ROOT / "data" / "daily100"
 STATE_FILE = STATE_DIR / "state.json"
 JOURNAL_FILE = STATE_DIR / "journal.jsonl"
 
-UNDERLYING = "SPY"
+UNDERLYING = "SPY"  # regime gate + backtests reference
+SCAN_UNIVERSE = ["SPY", "QQQ", "IWM"]  # where the day's single ticket may come from
 BUDGET_FRACTION = Decimal("0.95")
 CONTRACT_MULTIPLIER = 100
 
@@ -184,69 +185,62 @@ def mode_open() -> int:
         print(f"vol regime out of band (ATR {atr_pct:.2%}); skipped")
         return 0
 
-    # Opening range: SPY minute bars for the first 30 minutes of today's session.
+    # Opening range scan across the liquid short-dated-options underlyings. SPY isn't the only
+    # tape: QQQ breaks out on tech days and IWM on small-cap days while SPY chops. One position
+    # per day still -- the scan widens WHERE the day's single ticket can come from, not how many.
     session_start = datetime.now(timezone.utc).replace(hour=13, minute=30, second=0, microsecond=0)
-    minute_bars = stocks.get_stock_bars(
-        StockBarsRequest(
-            symbol_or_symbols=UNDERLYING,
-            timeframe=TimeFrame.Minute,
-            start=session_start,
-            feed=DataFeed.IEX,
-        )
-    ).data.get(UNDERLYING, [])
-    range_bars = [b for b in minute_bars if b.timestamp < session_start + timedelta(minutes=30)]
-    if len(range_bars) < 10 or len(minute_bars) <= len(range_bars):
-        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_insufficient_bars"})
-        save_state(state)
-        print("not enough minute bars to define the opening range yet")
-        return 0
-    or_high = max(b.high for b in range_bars)
-    or_low = min(b.low for b in range_bars)
-    spot = float(minute_bars[-1].close)
+    candidates = []
+    scan_notes = {}
+    for symbol in SCAN_UNIVERSE:
+        minute_bars = stocks.get_stock_bars(
+            StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Minute,
+                start=session_start,
+                feed=DataFeed.IEX,
+            )
+        ).data.get(symbol, [])
+        range_bars = [b for b in minute_bars if b.timestamp < session_start + timedelta(minutes=30)]
+        if len(range_bars) < 10 or len(minute_bars) <= len(range_bars):
+            scan_notes[symbol] = "insufficient_bars"
+            continue
+        or_high = max(b.high for b in range_bars)
+        or_low = min(b.low for b in range_bars)
+        spot = float(minute_bars[-1].close)
+        # Session VWAP -- a breakout the volume-weighted tape disagrees with is far more
+        # likely a false break.
+        vol_total = sum(b.volume for b in minute_bars) or 1
+        vwap = sum(((b.high + b.low + b.close) / 3) * b.volume for b in minute_bars) / vol_total
 
-    # Session VWAP -- the standard technical confirmation for ORB entries. A breakout the
-    # volume-weighted tape disagrees with is far more likely to be a false break.
-    vol_total = sum(b.volume for b in minute_bars) or 1
-    vwap = sum(((b.high + b.low + b.close) / 3) * b.volume for b in minute_bars) / vol_total
+        if spot > or_high and spot > vwap:
+            direction, strength = "call", (spot - or_high) / spot
+        elif spot < or_low and spot < vwap:
+            direction, strength = "put", (or_low - spot) / spot
+        elif spot > or_high or spot < or_low:
+            scan_notes[symbol] = f"breakout_against_vwap (vwap {vwap:.2f}, spot {spot})"
+            continue
+        else:
+            scan_notes[symbol] = f"inside_range [{or_low}, {or_high}] spot {spot}"
+            continue
+        candidates.append(
+            {"symbol": symbol, "direction": direction, "strength": strength, "spot": spot,
+             "or_high": or_high, "or_low": or_low, "vwap": round(vwap, 4)}
+        )
 
-    if spot > or_high and spot > vwap:
-        direction = "call"
-    elif spot < or_low and spot < vwap:
-        direction = "put"
-    elif spot > or_high or spot < or_low:
-        journal(
-            {
-                "day": state["day"],
-                "mode": "moonshot_open",
-                "action": "skip_breakout_against_vwap",
-                "or_high": or_high,
-                "or_low": or_low,
-                "vwap": round(vwap, 4),
-                "spot": spot,
-            }
-        )
+    if not candidates:
+        journal({"day": state["day"], "mode": "moonshot_open", "action": "skip_no_breakout_anywhere", "scan": scan_notes})
         save_state(state)
-        print(f"breakout unconfirmed by VWAP ({vwap:.2f}); skipped")
+        print(f"no confirmed breakout on any of {SCAN_UNIVERSE}; day skipped ({scan_notes})")
         return 0
-    else:
-        journal(
-            {
-                "day": state["day"],
-                "mode": "moonshot_open",
-                "action": "skip_inside_opening_range",
-                "or_high": or_high,
-                "or_low": or_low,
-                "spot": spot,
-            }
-        )
-        save_state(state)
-        print(f"no breakout: spot {spot} inside opening range [{or_low}, {or_high}]; chop day skipped")
-        return 0
+
+    # Strongest breakout (largest push beyond its range, as a fraction of price) gets the ticket.
+    best = max(candidates, key=lambda c: c["strength"])
+    underlying, direction, spot = best["symbol"], best["direction"], best["spot"]
 
     # Today's expiration if it exists, else the nearest one this week.
     contracts_resp = trading.get_option_contracts(
         GetOptionContractsRequest(
-            underlying_symbols=[UNDERLYING],
+            underlying_symbols=[underlying],
             status=AssetStatus.ACTIVE,
             type=ContractType.CALL if direction == "call" else ContractType.PUT,
             expiration_date_gte=today,
@@ -258,7 +252,7 @@ def mode_open() -> int:
     )
     contracts = list(contracts_resp.option_contracts or [])
     if not contracts:
-        journal({"day": state["day"], "mode": "moonshot_open", "action": "no_contracts_found"})
+        journal({"day": state["day"], "mode": "moonshot_open", "action": f"no_contracts_found_{underlying}"})
         save_state(state)
         print("no contracts found; skipping day")
         return 0
@@ -339,7 +333,8 @@ def mode_open() -> int:
             "day": state["day"],
             "mode": "moonshot_open",
             "action": f"bought 1x {chosen.symbol} ({direction}, strike {chosen.strike_price}, exp {nearest_exp}) @ {filled.filled_avg_price}",
-            "breakout": {"or_high": or_high, "or_low": or_low, "spot": spot},
+            "breakout": best,
+            "scan": scan_notes,
             "cost": str(cost),
             "tp_price": str(tp_price),
             "ledger_cash": str(ledger),

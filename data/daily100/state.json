@@ -1,7 +1,20 @@
 {
   "started": "2026-08-18",
-  "ledger_cash": "125.65",
-  "position": null,
+  "ledger_cash": "21.65",
+  "position": {
+    "kind": "option",
+    "symbol": "SPY260819C00772000",
+    "qty": "1",
+    "entry_price": "1.04",
+    "entry_cost": "104.00",
+    "strike": "772.0",
+    "spot_at_entry": 772.055,
+    "direction": "call",
+    "expiration": "2026-08-19",
+    "entry_date": "2026-08-19",
+    "tp_order_id": "b65ba3eb-4a42-46bf-ad8b-21c18baa6853",
+    "tp_price": "2.08"
+  },
   "day": 2,
   "last_run_date": "2026-08-19"
 }
