@@ -60,6 +60,68 @@ holding to the close.
    to recover. Arithmetic average up, geometric outcome down. Bet size beats bet quality;
    Kelly wept.
 
+## Deep-dive research + strategy bake-off (Aug 20)
+
+Swept the stop-loss literature, ticker-liquidity comparisons, unconventional setups (gap
+fills, first-hour reversals, power hour), and structural alternatives (debit spreads vs naked
+longs). Then TESTED the promising ones instead of trusting them. All numbers below are from
+backtest_moonshot.py over 249 days of real SPY minute bars, modelled premiums.
+
+| variant (all same entry stack unless noted) | trades | win% | avg/trade | $100 → |
+|---|---|---|---|---|
+| live bot, 95% bet | 5 | 40.0% | -16.9% | 2.46 (ruined) |
+| + half out at +50% (partial profit) | 5 | 40.0% | **-26.9%** | 2.16 (ruined) |
+| + breakeven trail after +50% | 5 | 40.0% | -16.9% | 2.46 (ruined) |
+| + trail with continuous stop | 5 | 20.0% | -22.8% | 11.38 |
+| **same trades, 50% bet** | 5 | 40.0% | -16.9% | **32.62** |
+| **same trades, 25% bet** | 5 | 40.0% | -16.9% | **69.32** |
+| ORB only (no M/W/F, no regime), 25% | 64 | 26.6% | -12.3% | 4.98 (ruined) |
+| gap-fade, 25% | 144 | 27.8% | -28.6% | 4.31 (ruined) |
+| gap-fade + continuous stop, 25% | 144 | 22.2% | -20.3% | 4.52 (ruined) |
+
+### What the bake-off proves
+
+1. **Every long-0DTE variant has negative average return.** Nine structurally different
+   configurations — different entries (momentum, breakout, gap-fade), different exits
+   (fixed TP, partial, trailing, three stop regimes), different filters — and not one is
+   positive. The signal is not the problem. **Theta is.** Buying a decaying asset and
+   needing a move big enough to outrun the decay is a losing proposition on average,
+   and no entry filter fixes it.
+2. **Bet size is the ONLY lever that changed survival.** Identical trades, identical win
+   rate: 95% → $2.46 (dead), 50% → $32.62, 25% → $69.32. Fourth independent derivation of
+   the same law. Sizing dominates selection.
+3. **Partial profit-taking HURT** (-16.9% → -26.9%): in a strategy whose rare winners must
+   be enormous, capping half of them at +50% removes the only thing paying for the losers.
+   Textbook advice, wrong for this payoff shape. Test everything.
+4. **Trailing stops did nothing** at these thresholds (too few trades reach the +50% arm).
+   The literature's hybrid (fixed stop → trail once profitable) is sound in general;
+   it has nothing to work with here.
+5. **The gap-fill edge is real but not tradeable this way.** Gaps fill 59-69% of the time
+   (structural: thin overnight liquidity overshoots, the session corrects it) — but 144
+   modelled trades still lost, because the option decays faster than the gap fills. An edge
+   in the *underlying* is not automatically an edge in *options on* the underlying.
+
+### The synthesis that matters
+
+The main repo strategy **sells** put credit spreads — it collects theta. The moonshot
+**buys** naked 0DTE options — it pays theta. Same market, opposite side of the same trade.
+One passes walk-forward validation; the other loses in every configuration tested. That is
+not a coincidence, and it is the single most useful thing this whole experiment produced.
+
+### Adopted / rejected from the research
+
+- **SPY-only for the scan (adopt):** SPY 0DTE spreads are $0.01-0.03 wide; QQQ next, IWM
+  widest. At $100 scale, crossing a wider spread is a pure tax. QQQ/IWM stay in the scan
+  only because the diversification of breakout opportunities was the user's explicit ask;
+  noted that SPY fills are strictly better.
+- **Debit spreads instead of naked longs (noted, not adopted):** defined risk, lower cost,
+  less theta exposure — the research's clear recommendation for small accounts. Not adopted
+  because a spread's cost at our ledger size collapses the position count to ~1 contract
+  with worse fills; revisit if the ledger grows.
+- **Selling premium instead of buying it (the real answer):** that is literally the main
+  strategy in this repo. The moonshot cannot adopt it — credit spreads need margin far
+  beyond a $100 ledger. This is the honest wall the experiment keeps hitting.
+
 ## Day 1 lessons (Aug 18)
 
 1. **The win was luck, and we can prove it.** The put was bought under the old naive rule

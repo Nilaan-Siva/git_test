@@ -94,41 +94,60 @@ def day_signals(day_bars):
     }
 
 
-def simulate_trade(day_bars, sig, direction: str, stop_mode=None):
-    """Model an ATM 0DTE option bought at 10:03, +100% TP minute-by-minute, else 15:45 exit.
+def simulate_trade(day_bars, sig, direction: str, stop_mode=None, exit_mode="tp100", tp_mult=2.0):
+    """Model an ATM 0DTE option bought at the decision minute; returns fractional P&L.
 
-    stop_mode: None (live bot today), "cont" (-50% stop checked every minute -- the published
-    structure, an upper bound we cannot fully replicate), or "midday" (-50% checked ONCE at
-    ~12:30 ET -- what a scheduled stop-check Routine could actually do).
+    stop_mode: None | "midday" (-50% checked once ~12:30) | "cont" (-50% every minute)
+    exit_mode:
+      tp100    -- sell all at +100%, else 15:45 close (the live bot)
+      partial  -- sell HALF at +50%, remainder at +100% or 15:45 close
+      trail    -- once +50% is touched, trail a stop at breakeven (the hybrid the
+                  stop-loss literature recommends: fixed risk first, trail once profitable)
     """
     is_call = direction == "call"
     spot = sig["spot"]
-    strike = round(spot)  # nearest dollar strike
+    strike = round(spot)
     minutes_left = len(day_bars) - sig["decision_idx"]
     entry_t = minutes_left / (390 * 252)
     entry_px = bs_price(spot, strike, entry_t, IV, is_call)
     if entry_px <= 0.05:
         return None
-    tp_px = entry_px * 2
+    tp_px = entry_px * tp_mult
+    half_px = entry_px * 1.5
     stop_px = entry_px * 0.5
-    midday_i = 147  # ~12:30 ET, in minutes after the 10:03 decision bar
+    midday_i = 147
+    banked = 0.0          # realised fraction of the position already sold
+    remaining = 1.0
+    armed = False         # trailing stop armed (only in "trail" mode)
+
     for i, b in enumerate(day_bars[sig["decision_idx"] + 1 :], start=1):
         t = max(minutes_left - i, 1) / (390 * 252)
         favourable = b.high if is_call else b.low
-        if bs_price(favourable, strike, t, IV, is_call) >= tp_px:
-            return 1.0  # +100%
+        fav_val = bs_price(favourable, strike, t, IV, is_call)
         close_val = bs_price(b.close, strike, t, IV, is_call)
+
+        if exit_mode == "partial" and remaining == 1.0 and fav_val >= half_px:
+            banked += 0.5 * (half_px / entry_px)   # half out at +50%
+            remaining = 0.5
+        if exit_mode == "trail" and not armed and fav_val >= half_px:
+            armed = True                            # breakeven stop now live
+        if armed and close_val <= entry_px:
+            return banked + remaining * 1.0 - 1.0   # out at breakeven
+
+        if fav_val >= tp_px:
+            return banked + remaining * tp_mult - 1.0
         if stop_mode == "cont" and close_val <= stop_px:
-            return close_val / entry_px - 1.0
+            return banked + remaining * (close_val / entry_px) - 1.0
         if stop_mode == "midday" and i == midday_i and close_val <= stop_px:
-            return close_val / entry_px - 1.0
-        if i >= minutes_left - 15:  # ~15:45 forced exit
-            return close_val / entry_px - 1.0
-    exit_px = bs_price(day_bars[-1].close, strike, 1 / (390 * 252), IV, is_call)
-    return exit_px / entry_px - 1.0
+            return banked + remaining * (close_val / entry_px) - 1.0
+        if i >= minutes_left - 15:
+            return banked + remaining * (close_val / entry_px) - 1.0
+
+    final = bs_price(day_bars[-1].close, strike, 1 / (390 * 252), IV, is_call)
+    return banked + remaining * (final / entry_px) - 1.0
 
 
-def run_variant(days, name: str, stop_mode=None):
+def run_variant(days, name: str, stop_mode=None, exit_mode="tp100", bet=BET_FRACTION):
     ledger = LEDGER0
     trades = wins = 0
     peak, max_dd = LEDGER0, 0.0
@@ -136,6 +155,7 @@ def run_variant(days, name: str, stop_mode=None):
     ruined_on = None
     atr_window: list[float] = []
     prev_close = None
+    prev_day_close = None
 
     for day, bars in days.items():
         # Maintain the daily ATR(14)% series for the regime gate.
@@ -153,6 +173,31 @@ def run_variant(days, name: str, stop_mode=None):
         if sig is None:
             continue
         direction = None
+        if name.startswith("gapfade"):
+            if prev_day_close is None:
+                prev_day_close = day_close
+                continue
+            gap = (sig["open"] - prev_day_close) / prev_day_close
+            if gap > 0.002 and sig["spot"] > prev_day_close:      # gapped up, not yet filled
+                direction = "put"
+            elif gap < -0.002 and sig["spot"] < prev_day_close:   # gapped down, not yet filled
+                direction = "call"
+            prev_day_close = day_close
+            if direction is None:
+                continue
+            ret = simulate_trade(bars, sig, direction, stop_mode=stop_mode, exit_mode=exit_mode)
+            if ret is None:
+                continue
+            trades += 1
+            wins += ret > 0
+            returns.append(ret)
+            if not ruined_on:
+                ledger += ledger * bet * ret
+                peak = max(peak, ledger)
+                max_dd = max(max_dd, 1 - ledger / peak)
+                if ledger < 5:
+                    ruined_on = day
+            continue
         if name.startswith("naive"):
             direction = "call" if sig["spot"] >= sig["open"] else "put"
         else:
@@ -176,14 +221,14 @@ def run_variant(days, name: str, stop_mode=None):
         if direction is None:
             continue
 
-        ret = simulate_trade(bars, sig, direction, stop_mode=stop_mode)
+        ret = simulate_trade(bars, sig, direction, stop_mode=stop_mode, exit_mode=exit_mode)
         if ret is None:
             continue
         trades += 1
         wins += ret > 0
         returns.append(ret)
         if not ruined_on:
-            ledger += ledger * BET_FRACTION * ret
+            ledger += ledger * bet * ret
             peak = max(peak, ledger)
             max_dd = max(max_dd, 1 - ledger / peak)
             if ledger < 5:
@@ -202,23 +247,28 @@ def run_variant(days, name: str, stop_mode=None):
 
 def main() -> int:
     days = fetch_days()
-    print(f"{len(days)} trading days of SPY minute bars loaded ({MONTHS} months, IEX feed)")
-    print(f"modelled option: ATM same-day, BS at flat IV={IV:.0%}; +100% TP else 15:45 exit")
-    print(
-        f"{'variant':12s} {'trades':>6s} {'win%':>6s} {'TP hit':>7s} {'avg ret':>8s} "
-        f"{'med ret':>8s} {'$100 becomes':>13s} {'ruined on':>11s}"
-    )
-    for name, stop in (
-        ("naive", None), ("orb", None), ("orb_vwap", None), ("full_stack", None),
-        ("full_stack", "midday"), ("full_stack", "cont"),
-        ("full_stack_str", "midday"), ("full_stack_vol", "midday"), ("full_stack_str_vol", "midday"),
-    ):
-        r = run_variant(days, name, stop_mode=stop)
-        r["variant"] = f"{name}+{stop}" if stop else name
+    print(f"{len(days)} trading days of SPY minute bars ({MONTHS} months, IEX feed)")
+    print(f"modelled: ATM 0DTE, BS flat IV={IV:.0%}; entry at the 10:03 decision minute\n")
+    print(f"{'variant':34s} {'trades':>6s} {'win%':>6s} {'avg ret':>8s} {'$100 ->':>10s} {'ruined':>11s}")
+    combos = [
+        ("full_stack_str", "midday", "tp100", 0.95, "live bot (95% bet)"),
+        ("full_stack_str", "midday", "partial", 0.95, "+ half out at +50%"),
+        ("full_stack_str", "midday", "trail", 0.95, "+ breakeven trail"),
+        ("full_stack_str", "cont", "trail", 0.95, "+ trail, cont stop"),
+        ("full_stack_str", "midday", "tp100", 0.50, "50% bet size"),
+        ("full_stack_str", "midday", "partial", 0.50, "50% bet + partial"),
+        ("full_stack_str", "midday", "trail", 0.50, "50% bet + trail"),
+        ("full_stack_str", "midday", "trail", 0.25, "25% bet + trail"),
+        ("orb", "midday", "trail", 0.25, "no M/W/F+regime, 25% + trail"),
+        ("gapfade", "midday", "tp100", 0.25, "GAP-FADE 25% bet"),
+        ("gapfade", "cont", "tp100", 0.25, "GAP-FADE 25% + cont stop"),
+        ("gapfade", "midday", "trail", 0.25, "GAP-FADE 25% + trail"),
+    ]
+    for name, stop, exit_mode, bet, label in combos:
+        r = run_variant(days, name, stop_mode=stop, exit_mode=exit_mode, bet=bet)
         print(
-            f"{r['variant']:12s} {r['trades']:6d} {r['win_rate']:6.1%} {r['tp_rate']:7.1%} "
-            f"{r['avg_ret']:8.1%} {r['median_ret']:8.1%} {r['final_ledger']:13.2f} "
-            f"{str(r['ruined_on'] or '-'):>11s}"
+            f"{label:34s} {r['trades']:6d} {r['win_rate']:6.1%} {r['avg_ret']:8.1%} "
+            f"{r['final_ledger']:10.2f} {str(r['ruined_on'] or '-'):>11s}"
         )
     return 0
 
