@@ -19,11 +19,14 @@ trades; this file holds the *thinking*.
 
 ## The machine (current spec — moonshot100.py)
 
-Entry (10:03 ET, Routine `moonshot100-open`): Mon/Wed/Fri only → macro-event calendar gate
-(trades through pre-open releases; skips the Sep 16 FOMC day) → volatility-regime gate
-(14-day ATR% in [0.5%, 1.8%], the VIX-15–25 stand-in) → 30-minute opening range breakout →
-VWAP agreement → one contract, nearest-the-money that fits ~95% of ledger, walking OTM only
-as far as the budget forces → +100% take-profit limit resting immediately.
+Entry (10:03 ET, Routine `moonshot100-open`), every gate in order: kill switch (ledger ≥ $5) →
+Mon/Wed/Fri only → macro-event calendar (trades through pre-open releases; skips the Sep 16
+FOMC day) → 09:50–10:50 ET entry window (added Aug 20; no late second looks, including from
+me) → volatility-regime gate (14-day ATR% in [0.5%, 1.8%], the VIX-15–25 stand-in) →
+30-minute opening range breakout, scanned across SPY/QQQ/IWM, strongest push wins →
+≥0.1% escape beyond the range edge (added Aug 20; pokes are noise) → VWAP agreement → one
+contract within 0.6% of spot costing ≤50% of ledger, else skip → +100% take-profit limit
+resting immediately.
 Midday (12:33 ET, `moonshot100-stopcheck`): sell if bid ≤ 50% of entry.
 Close (15:47 ET, `moonshot100-close`): book the TP if it filled, else market-sell; reconciles
 Alpaca's ~15:30+ expiry auto-liquidations from order history instead of erroring.
@@ -39,6 +42,11 @@ under M/W/F + macro exclusion + VIX 15–25); quantish.io refinement (2.2 Sharpe
 |-----|------|--------|-----|--------|
 | 1 | Aug 18 | GLD flip +0.31, SOXS flip -0.66 (track-switch churn), SPY 769p 0.85→1.11 | +25.65 | **$125.65** |
 | 2 | Aug 19 | SPY 772c 1.04→0.29 (midday stop) | -75.00 | **$50.65** |
+| 3 | Aug 20 | no trade — Thursday, day-of-week filter | 0.00 | **$50.65** |
+
+Two trades in, the sample is exactly what the on-record odds predicted: one +26, one -75,
+net -49% of starting capital in 48 hours. Nothing here contradicts the bake-off's finding
+that the average trade is negative; it is a two-trade sample of a negative-expectancy process.
 
 ## Day 2 lessons (Aug 19) — the false breakout post-mortem
 
@@ -192,18 +200,32 @@ because someone believed automation could replace thinking."*
 
 ## Idea backlog (not implemented, with reasons)
 
-- Volume-confirmation on the breakout candle — plausible, unmodeled; add to backtest first.
-- 15-min opening range variant — more trades, weaker levels; backtest first.
-- Entry-on-break (event-driven) vs 10:03 snapshot — likely material improvement; needs a
-  polling/streaming runner, not just cron Routines.
-- Real intraday options data for honest backtests — paid (Polygon paid tier / CBOE).
-- Prop-firm route — REJECTED: ~7% ever see a payout; fee machine.
-- Crypto leverage — REJECTED: not on Alpaca paper; liquidation math is the same trap.
+- Entry-on-break (event-driven) vs the 10:03 snapshot — the largest remaining upgrade;
+  needs a polling/streaming runner, not cron Routines. Still unbuilt.
+- Real intraday options data for honest backtests — paid (Massive/Polygon paid tier, CBOE).
+  Every backtest number here is BS-modelled and therefore optimistic on fills.
+- Slippage haircut in the moonshot backtest — modelled fills assume mid; real 0DTE crossing
+  costs would push every already-negative variant further negative.
+- TESTED AND REJECTED Aug 20 (see bake-off): volume-confirmation on the breakout candle (no
+  modelled benefit), partial profit-taking (actively harmful, -16.9%→-26.9%), breakeven
+  trailing stops (no effect at these thresholds), gap-fade entries (144 trades, -28.6%/trade).
+- REJECTED earlier: prop firms (~7% ever see a payout — a fee machine); crypto leverage (not
+  on Alpaca paper; liquidation math is the same trap); debit spreads (right idea per the
+  research, but at a $50 ledger the fills and contract count collapse — revisit if it grows).
 
 ## Parallel tracks (context for whoever reads this cold)
 
-- Weeklies backfill (SPY pilot) running for the validated strategy — its check-ins are
-  separate Routines. PR #1 documents the whole validated-strategy arc including the
-  mark-to-market engine bug found and fixed on Aug 18.
+- **SPY weeklies pilot: COMPLETE and validated (Aug 20).** Adding every-Friday expirations to
+  the validated put-credit-spread strategy did exactly what it was meant to: 6-month SPY went
+  5 trades/+$176.76 per trade → **8 trades/+$351.72 at 87.5% win rate**, chain coverage 95%→99%,
+  and the old #1 no-trade reason (`no_expiration_in_window`, 188+ hits) collapsed to 2. The
+  binding constraint is now IV-rank, a quality gate, rather than a data gap. The single-ticker
+  18-month walk-forward came back INCONCLUSIVE — 0/1/5/8 trades per fold against a 10-trade
+  bar — which is a statement about sample size, not about the strategy.
+- **5-ticker weeklies extension running** (QQQ, DIA, IWM, XLK, GLD; launched 12:28 UTC Aug 20,
+  free tier, ETA ~Aug 24). Its completion triggers the properly-powered 6-ticker walk-forward —
+  the real verdict on whether weeklies upgrade the validated strategy.
+- PR #1 documents the validated-strategy arc, including the mark-to-market engine bug found
+  and fixed on Aug 18 that had corrupted every prior backtest number in the project.
 - Real-money ladder advice to the user stands: side income → savings milestones → the
   validated strategy at $5k+ — the moonshot is a paper demonstration, not the plan.
