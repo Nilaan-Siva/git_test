@@ -15,16 +15,15 @@ SPX variant reports a 2.2 Sharpe):
     put. Price still inside the range means a chop day: skip it, journal it. Chop days are
     where 0DTE longs bleed to death on theta.
   * Mon/Wed/Fri only -- the days that carried the edge in the backtest. Tue/Thu are skipped.
-  * Contract: nearest expiration, the strike CLOSEST to the money whose ask fits ~95% of the
-    ledger, walking out-of-the-money only as far as the budget forces; if even the cheapest
-    ticket is unaffordable, the day is skipped, not forced.
+  * Contract: nearest expiration, the strike CLOSEST to the money whose ask fits the budget
+    (BUDGET_FRACTION of ledger) AND sits within MAX_OTM_PCT of spot. Nothing qualifying means
+    the day is skipped, not forced onto a junk strike.
   * Immediately after the fill, a +100% take-profit limit sell (2x entry) goes in for the day:
     a double banks itself intraday without waiting for the afternoon run.
-  * Max loss is the premium paid: a bad day still loses ~95% of the ledger in one shot. That
-    is the aggression the user chose, stated plainly. (The backtest's -50% intraday stop is
-    NOT implemented -- Alpaca options orders here support market/limit only, and there is no
-    streaming process to watch the tape -- so this implementation is strictly riskier per
-    trade than the published version. Journalled as a known deviation.)
+  * Max loss is the premium paid: a bad day costs ~half the ledger (revised down from ~95% on
+    Aug 20 -- see the sizing note above BUDGET_FRACTION). A -50% stop-check runs at ~12:33 ET;
+    it is a single scheduled look, not the continuous stop the published backtests assume,
+    because options here support market/limit orders only with no streaming watcher.
 
 Afternoon run (--mode close, ~15:47 ET): if the take-profit already filled, book it; else
 cancel the resting limit and sell at market, no exceptions -- 0DTE held to the bell expires to
@@ -54,7 +53,16 @@ JOURNAL_FILE = STATE_DIR / "journal.jsonl"
 
 UNDERLYING = "SPY"  # regime gate + backtests reference
 SCAN_UNIVERSE = ["SPY", "QQQ", "IWM"]  # where the day's single ticket may come from
-BUDGET_FRACTION = Decimal("0.95")
+# Sizing, revised Aug 20 after the strategy bake-off. Nine long-0DTE variants all had
+# NEGATIVE average return, and bet size was the only lever that changed survival: the same
+# trades at 95%/50%/25% of ledger ended at $2.46 (ruined) / $32.62 / $69.32. Halving the bet
+# does not make a losing edge win -- it buys the experiment enough lives to find out.
+BUDGET_FRACTION = Decimal("0.50")
+# The cost of a smaller budget at a small ledger: one contract is indivisible, so less money
+# buys a FURTHER out-of-the-money strike, not a smaller piece of the same one. Past this
+# distance the contract stops being a directional bet and becomes a lottery ticket with a
+# terrible fill, so the day is skipped instead. As the ledger grows this floor stops binding.
+MAX_OTM_PCT = Decimal("0.006")
 CONTRACT_MULTIPLIER = 100
 
 # The index-level "fundamentals": the macro-event calendar, verified through the experiment
@@ -278,10 +286,14 @@ def mode_open() -> int:
         OptionLatestQuoteRequest(symbol_or_symbols=[c.symbol for c in contracts])
     )
     chosen, ask = None, None
+    spot_dec = Decimal(str(spot))
     for c in contracts:
         q = quotes.get(c.symbol)
         if q is None or q.ask_price in (None, 0):
             continue
+        otm_dist = abs(Decimal(str(c.strike_price)) - spot_dec) / spot_dec
+        if otm_dist > MAX_OTM_PCT:
+            continue  # too far out to be a directional bet -- see MAX_OTM_PCT
         cost = Decimal(str(q.ask_price)) * CONTRACT_MULTIPLIER
         if cost <= budget:
             chosen, ask = c, Decimal(str(q.ask_price))
@@ -293,11 +305,11 @@ def mode_open() -> int:
                 "day": state["day"],
                 "mode": "moonshot_open",
                 "action": "skip_unaffordable",
-                "detail": f"cheapest viable {direction} near {spot} exceeds budget {budget}",
+                "detail": f"no {direction} within {MAX_OTM_PCT:.1%} of {spot} priced under the {budget} budget",
             }
         )
         save_state(state)
-        print(f"no affordable {direction}; skipping day (budget {budget})")
+        print(f"no affordable near-the-money {direction} within budget {budget}; day skipped")
         return 0
 
     order = trading.submit_order(

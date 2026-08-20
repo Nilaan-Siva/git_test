@@ -122,6 +122,29 @@ not a coincidence, and it is the single most useful thing this whole experiment 
   strategy in this repo. The moonshot cannot adopt it — credit spreads need margin far
   beyond a $100 ledger. This is the honest wall the experiment keeps hitting.
 
+## Sizing change (Aug 20) — 95% → 50% per trade
+
+Acted on the bake-off's one durable finding. BUDGET_FRACTION 0.95 → 0.50, plus a new
+MAX_OTM_PCT = 0.6% quality floor on strike distance.
+
+Why the floor exists: one option contract is indivisible, so at a small ledger a smaller
+budget does not buy a smaller slice of the same trade — it buys a *further out-of-the-money*
+strike, which is a different (worse) bet with a wider spread. The backtest's "50% bet" row
+assumed the same ATM contract at half size, which is impossible below roughly $200 of ledger.
+The floor keeps the bot honest: near-the-money or no trade.
+
+Consequence at today's $50.65 ledger: budget $25.32 → max contract price $0.25, strike within
+±$4.62 of spot on SPY. Some days nothing will qualify and the bot will sit in cash. **Those
+skips are the sizing discipline working, not the bot failing.** As the ledger grows the floor
+stops binding; if the ledger shrinks it binds harder, which is the correct direction — a
+smaller account should trade less, not gamble harder to catch up.
+
+Honest cost of the change: the "four consecutive doubles to $1,000" geometry is gone. At 50%
+sizing a double only grows the ledger 50%, so $1,000 now needs many more good days. Traded
+certain-ruin-with-a-lottery-ticket for a slower path with survivable variance. The on-record
+odds of hitting $1,000 go DOWN, not up; the odds of the experiment still being alive on day 30
+(and therefore of learning anything) go up a lot.
+
 ## Day 1 lessons (Aug 18)
 
 1. **The win was luck, and we can prove it.** The put was bought under the old naive rule
