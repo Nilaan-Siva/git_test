@@ -8,3 +8,4 @@
 {"day": 2, "mode": "moonshot_open", "action": "bought 1x SPY260819C00772000 (call, strike 772.0, exp 2026-08-19) @ 1.04", "breakout": {"symbol": "SPY", "direction": "call", "strength": 0.0018975332068310135, "spot": 772.055, "or_high": 770.59, "or_low": 768.18, "vwap": 770.0496}, "scan": {"QQQ": "inside_range [713.39, 721.39] spot 718.19", "IWM": "inside_range [301.76, 303.13] spot 302.98"}, "cost": "104.00", "tp_price": "2.08", "ledger_cash": "21.65", "ts": "2026-08-19T14:59:55.759382+00:00"}
 {"day": 2, "mode": "moonshot_stopcheck", "action": "stop_loss: sold SPY260819C00772000 @ 0.29 (bid had fallen past -50%)", "proceeds": "29.00", "pnl": "-75.00", "ledger_cash": "50.65", "ts": "2026-08-19T16:35:04.615590+00:00"}
 {"day": 2, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-08-19T19:48:04.962485+00:00"}
+{"day": 3, "mode": "moonshot_open", "action": "skip_day_of_week", "ts": "2026-08-20T14:18:59.567715+00:00"}
