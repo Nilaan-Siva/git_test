@@ -229,6 +229,7 @@ class PolygonProvider(ChainProvider):
         strike_band_above: float = 0.03,
         strike_step: Optional[Decimal] = None,
         bar_cache_dir: Optional[Path] = None,
+        contract_cache_dir: Optional[Path] = None,
     ):
         """`strike_band_*` bound which strikes are worth fetching, as fractions of spot.
 
@@ -248,6 +249,16 @@ class PolygonProvider(ChainProvider):
         self.strike_band_above = strike_band_above
         self.strike_step = strike_step
         self.bar_cache_dir = bar_cache_dir
+        # Contract *listings* are the other half of a restart's cost and were never cached.
+        # A weekly 18-month backfill lists 83 expirations per ticker, and those calls are paid
+        # again on every restart before a single new bar is fetched -- 104 minutes across five
+        # tickers at 4 calls/min. Measured against this run's container deaths that re-listing,
+        # not the rate limit, was eating ~72% of throughput. Listings for an expiration that has
+        # already passed can never change, so caching them is free correctness.
+        self.contract_cache_dir = contract_cache_dir
+        # Underlying daily bars are re-fetched once per ticker by the estimate pass and again by
+        # build_chains; memoising them in-process removes the duplicate outright.
+        self._underlying_bar_memo: dict[tuple[str, date, date], dict[date, dict[str, Any]]] = {}
         # (ticker, reason) for contracts that could not be loaded; surfaced by the
         # backfill script so a thinned chain is visible rather than silent.
         self.skipped_contracts: list[tuple[str, str]] = []
@@ -255,7 +266,16 @@ class PolygonProvider(ChainProvider):
     # ---- low-level endpoints ---------------------------------------------------------------
 
     def underlying_bars(self, underlying: str, start: date, end: date) -> dict[date, dict[str, Any]]:
-        """Every daily bar for the underlying across a range, in one call."""
+        """Every daily bar for the underlying across a range, in one call.
+
+        Memoised per (ticker, range) for the life of the provider: the backfill script asks for
+        the same window twice per ticker -- once to size its API-call estimate, once inside
+        build_chains -- and at 4 calls/min a duplicate is 15 wasted seconds per ticker per run.
+        """
+        memo_key = (underlying.upper(), start, end)
+        memoised = self._underlying_bar_memo.get(memo_key)
+        if memoised is not None:
+            return memoised
         raw = self._client.get(
             f"{POLYGON_BASE_URL}/v2/aggs/ticker/{underlying.upper()}/range/1/day/"
             f"{start.isoformat()}/{end.isoformat()}",
@@ -266,6 +286,7 @@ class PolygonProvider(ChainProvider):
             day = _bar_date(bar)
             if day is not None:
                 out[day] = bar
+        self._underlying_bar_memo[memo_key] = out
         return out
 
     def option_bars(self, option_ticker: str, start: date, end: date) -> dict[date, dict[str, Any]]:
@@ -328,6 +349,69 @@ class PolygonProvider(ChainProvider):
         tmp.write_text(json.dumps(bars))
         tmp.replace(path)
 
+    # A listing is only immutable once its expiration is safely in the past. Strikes are still
+    # being added to live expirations as spot moves, so caching those risks a permanently thin
+    # chain -- the one failure mode that would be invisible in the data and fatal in a backtest.
+    CONTRACT_CACHE_MIN_AGE_DAYS = 7
+
+    def _contract_cache_path(self, underlying: str, expiration: date, right: Optional[Right]):
+        if self.contract_cache_dir is None:
+            return None
+        tag = right.value.lower() if right is not None else "both"
+        return self.contract_cache_dir / f"{underlying.upper()}_{expiration.isoformat()}_{tag}.json"
+
+    def _read_cached_contracts(
+        self, underlying: str, expiration: date, right: Optional[Right], strike_min: Decimal, strike_max: Decimal
+    ) -> Optional[list[dict[str, Any]]]:
+        """Cached listing, but only when it covers at least the band being asked for.
+
+        The band is recomputed per expiration from the spot range over that expiration's own
+        relevant days, so it is stable for past expirations and drifts for recent ones. Storing
+        the band alongside the results and requiring the cached one to be a superset means a
+        drifted request refetches instead of silently returning a truncated chain.
+        """
+        path = self._contract_cache_path(underlying, expiration, right)
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        try:
+            cached_min = Decimal(str(payload["strike_min"]))
+            cached_max = Decimal(str(payload["strike_max"]))
+            results = payload["results"]
+        except (KeyError, TypeError, ArithmeticError):
+            return None
+        if cached_min > strike_min or cached_max < strike_max:
+            return None
+        return [
+            raw
+            for raw in results
+            if raw.get("strike_price") is not None
+            and strike_min <= Decimal(str(raw["strike_price"])) <= strike_max
+        ]
+
+    def _write_cached_contracts(
+        self,
+        underlying: str,
+        expiration: date,
+        right: Optional[Right],
+        strike_min: Decimal,
+        strike_max: Decimal,
+        results: list[dict[str, Any]],
+    ) -> None:
+        path = self._contract_cache_path(underlying, expiration, right)
+        if path is None:
+            return
+        if (date.today() - expiration).days < self.CONTRACT_CACHE_MIN_AGE_DAYS:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"strike_min": str(strike_min), "strike_max": str(strike_max), "results": results}
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(path)
+
     def list_contracts(
         self,
         underlying: str,
@@ -343,7 +427,15 @@ class PolygonProvider(ChainProvider):
         Deliberately does NOT send `as_of`: combined with `expired=true` that parameter returns
         the oldest contracts Polygon has ever listed rather than the ones live on that date.
         Filtering by `expiration_date` is both correct and far cheaper.
+
+        Results for long-past expirations are memoised to `contract_cache_dir`, which is what
+        makes a restart cheap: without it every relaunch re-lists every expiration before
+        fetching a single new bar.
         """
+        cached = self._read_cached_contracts(underlying, expiration, right, strike_min, strike_max)
+        if cached is not None:
+            return cached
+
         params: dict[str, Any] = {
             "underlying_ticker": underlying.upper(),
             "expiration_date": expiration.isoformat(),
@@ -364,6 +456,7 @@ class PolygonProvider(ChainProvider):
             if not next_url:
                 break
             url, params = next_url, {}
+        self._write_cached_contracts(underlying, expiration, right, strike_min, strike_max, results)
         return results
 
     # ---- ChainProvider interface ------------------------------------------------------------

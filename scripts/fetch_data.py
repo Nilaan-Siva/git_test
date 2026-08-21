@@ -140,7 +140,10 @@ def main() -> int:
     # Per-contract bar cache: chains can only be assembled once every contract is loaded, so
     # without this an interruption at 95% discards 95% of a multi-hour rate-limit budget.
     provider = PolygonProvider(
-        settings.polygon_api_key, strike_step=strike_step, bar_cache_dir=settings.cache_dir / "bars"
+        settings.polygon_api_key,
+        strike_step=strike_step,
+        bar_cache_dir=settings.cache_dir / "bars",
+        contract_cache_dir=settings.cache_dir / "contracts",
     )
 
     # The strike band is a fraction of each ticker's OWN price (see build_chains), so the call

@@ -11,7 +11,7 @@ Specifically, the shapes below encode these observed facts:
   * the contracts endpoint has **no** `open_interest` field on the free tier
   * the contracts endpoint paginates via `next_url`
 """
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -24,6 +24,7 @@ from optionsbot.data.providers.polygon import PolygonProvider, monthly_expiratio
 # midnight. 1781064000000 is 2026-06-10 00:00 EDT (04:00 UTC).
 JUN10 = 1781064000000
 JUN11 = 1781150400000
+PAST_EXPIRY = date(2026, 7, 17)  # comfortably past the CONTRACT_CACHE_MIN_AGE_DAYS floor
 
 
 def bar(ts: int, close: float, volume: int = 500) -> dict:
@@ -609,3 +610,108 @@ def test_a_permission_error_fails_immediately_without_burning_retries(monkeypatc
     with pytest.raises(DataUnavailableError, match="not entitled"):
         _RequestsHttpClient(api_key="k", calls_per_minute=0).get("https://example/x", {})
     assert calls["n"] == 1
+
+
+# ---- the contract-listing cache -------------------------------------------------------------
+#
+# Listings were the untracked half of a restart's cost: an 18-month weekly backfill lists 83
+# expirations per ticker, and every relaunch paid all of them again -- 104 minutes across five
+# tickers at 4 calls/min -- before fetching a single new bar.
+
+
+def test_contract_listings_are_cached_to_disk_and_reused(tmp_path):
+    client = make_client(**{"reference/options/contracts": {"results": [contract(700.0)]}})
+    provider = PolygonProvider("key", client=client, contract_cache_dir=tmp_path)
+    kwargs = dict(expiration=PAST_EXPIRY, strike_min=Decimal("650"), strike_max=Decimal("750"), right=Right.PUT)
+
+    first = provider.list_contracts("SPY", **kwargs)
+    second = provider.list_contracts("SPY", **kwargs)
+
+    assert first == second
+    assert len(client.calls) == 1, "cached listing was refetched"
+
+
+def test_a_cached_listing_narrower_than_the_request_is_refetched(tmp_path):
+    """The strike band is recomputed per expiration from that expiration's own spot range, so it
+    drifts for recent expirations. Returning a narrower cached band would silently thin the
+    chain -- invisible in the data, fatal in a backtest."""
+    client = make_client(**{"reference/options/contracts": {"results": [contract(700.0)]}})
+    provider = PolygonProvider("key", client=client, contract_cache_dir=tmp_path)
+
+    provider.list_contracts(
+        "SPY", expiration=PAST_EXPIRY, strike_min=Decimal("690"), strike_max=Decimal("710"), right=Right.PUT
+    )
+    provider.list_contracts(
+        "SPY", expiration=PAST_EXPIRY, strike_min=Decimal("600"), strike_max=Decimal("800"), right=Right.PUT
+    )
+
+    assert len(client.calls) == 2, "a wider band was served from a narrower cache"
+
+
+def test_a_cached_listing_wider_than_the_request_is_filtered_not_refetched(tmp_path):
+    client = make_client(
+        **{"reference/options/contracts": {"results": [contract(600.0), contract(700.0), contract(800.0)]}}
+    )
+    provider = PolygonProvider("key", client=client, contract_cache_dir=tmp_path)
+
+    provider.list_contracts(
+        "SPY", expiration=PAST_EXPIRY, strike_min=Decimal("500"), strike_max=Decimal("900"), right=Right.PUT
+    )
+    narrowed = provider.list_contracts(
+        "SPY", expiration=PAST_EXPIRY, strike_min=Decimal("650"), strike_max=Decimal("750"), right=Right.PUT
+    )
+
+    assert len(client.calls) == 1
+    assert [c["strike_price"] for c in narrowed] == [700.0], "cache returned strikes outside the request"
+
+
+def test_live_expirations_are_never_cached(tmp_path):
+    """Strikes are still being added to an expiration that has not passed yet; caching those
+    would pin a permanently thin chain."""
+    client = make_client(**{"reference/options/contracts": {"results": [contract(700.0)]}})
+    provider = PolygonProvider("key", client=client, contract_cache_dir=tmp_path)
+    soon = date.today() + timedelta(days=3)
+    kwargs = dict(expiration=soon, strike_min=Decimal("650"), strike_max=Decimal("750"), right=Right.PUT)
+
+    provider.list_contracts("SPY", **kwargs)
+    provider.list_contracts("SPY", **kwargs)
+
+    assert len(client.calls) == 2
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_a_truncated_listing_cache_file_is_refetched_rather_than_trusted(tmp_path):
+    client = make_client(**{"reference/options/contracts": {"results": [contract(700.0)]}})
+    provider = PolygonProvider("key", client=client, contract_cache_dir=tmp_path)
+    (tmp_path / f"SPY_{PAST_EXPIRY.isoformat()}_put.json").write_text('{"strike_min": "1", "resu')
+
+    found = provider.list_contracts(
+        "SPY", expiration=PAST_EXPIRY, strike_min=Decimal("650"), strike_max=Decimal("750"), right=Right.PUT
+    )
+
+    assert found and len(client.calls) == 1
+
+
+def test_no_contract_cache_dir_means_no_files_and_no_reuse(tmp_path):
+    client = make_client(**{"reference/options/contracts": {"results": [contract(700.0)]}})
+    provider = PolygonProvider("key", client=client)
+    kwargs = dict(expiration=PAST_EXPIRY, strike_min=Decimal("650"), strike_max=Decimal("750"), right=Right.PUT)
+
+    provider.list_contracts("SPY", **kwargs)
+    provider.list_contracts("SPY", **kwargs)
+
+    assert len(client.calls) == 2
+    assert not list(tmp_path.iterdir())
+
+
+def test_underlying_bars_are_memoised_within_a_run(tmp_path):
+    """fetch_data asks for the same window twice per ticker -- once to size its estimate, once
+    inside build_chains. At 4 calls/min the duplicate is 15 wasted seconds per ticker per run."""
+    client = make_client(**{"aggs/ticker/SPY": {"results": [bar(JUN10, 600.0)]}})
+    provider = PolygonProvider("key", client=client)
+
+    first = provider.underlying_bars("SPY", date(2026, 6, 1), date(2026, 6, 10))
+    second = provider.underlying_bars("SPY", date(2026, 6, 1), date(2026, 6, 10))
+
+    assert first == second
+    assert len(client.calls) == 1
