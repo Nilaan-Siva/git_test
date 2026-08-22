@@ -14,6 +14,15 @@ htmlcov/
 !/data/cache/
 /data/cache/*
 !/data/cache/contracts/
+# The bar cache is committed for the same reason, arrived at the hard way. Rollbacks #4 and #5
+# both pinned it back to exactly 18294 contracts, so the run made zero net progress across six
+# hours of uptime: everything fetched between a snapshot and the next rollback was discarded.
+# These 18k+ files are the accumulated product of ~150 hours of 4-calls-per-minute fetching and
+# cannot be re-earned quickly, which is worth more than the repo weight (101MB of JSON, and git
+# packs it far smaller). Loose files rather than a tarball on purpose: git then stores each
+# contract once and a later commit adds only the new ones, where a tarball would re-add the
+# whole archive every time.
+!/data/cache/bars/
 .env
 *.egg-info/
 build/
