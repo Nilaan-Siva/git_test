@@ -37,6 +37,24 @@ The 78-hour floor cannot be negotiated down by scheduling; only uptime fraction 
 why the cadence is short. It is also why check-in turns should stay lean — a few hundred wakes
 at a few tens of thousands of tokens each is the real budget being spent.
 
+## Fresh-container recovery (rarer than a rollback, and worse)
+
+Most wakes land on a container that still has the virtualenv and `.env`. Occasionally one comes
+up genuinely bare — `.venv` missing, `.env` missing — because the restore point was the repo's
+2023 root commit rather than the usual recent snapshot. Symptoms: `exit 127` from the fetcher,
+then `OPTIONSBOT_POLYGON_API_KEY is not set`.
+
+```
+python3 -m venv .venv && .venv/bin/pip install -q -e ".[data]"
+.venv/bin/pip install -q alpaca-py python-dotenv     # for the moonshot bot
+```
+
+`.env` is gitignored, so it cannot be restored from the remote and **its secrets are simply
+gone**. The Alpaca paper keys are recoverable from the conversation history; the Polygon key is
+not, and the backfill cannot run without it — ask the user rather than guessing. Verify Alpaca
+with a `get_account()` call before trusting the moonshot Routines, because they will otherwise
+fail silently at the market open.
+
 ## Procedure on each check-in
 
 1. `git log --oneline -1`. Older than the remote tip → rollback: `git fetch origin <branch> &&
