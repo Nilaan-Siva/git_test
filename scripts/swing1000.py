@@ -80,7 +80,7 @@ def wait_for_fill(client, order_id: str, timeout_s: int = 90):
 
 def main() -> int:
     load_dotenv(REPO_ROOT / ".env")
-    from alpaca.data.enums import DataFeed
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
@@ -108,7 +108,11 @@ def main() -> int:
 
     bars = data.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=UNIVERSE, timeframe=TimeFrame.Day,
-        start=datetime.now(timezone.utc) - timedelta(days=45), feed=DataFeed.IEX))
+        # Adjustment.ALL is load-bearing: default bars are RAW, and a split inside the
+        # 20-day window (NVDA did 10:1 in June 2024) would corrupt every high/low and read
+        # as a 90% crash. Found the hard way in the first bake-off run.
+        start=datetime.now(timezone.utc) - timedelta(days=45), feed=DataFeed.IEX,
+        adjustment=Adjustment.ALL))
 
     sig = {}
     for sym in UNIVERSE:

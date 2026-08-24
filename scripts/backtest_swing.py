@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -45,7 +45,7 @@ def fetch():
     c = StockHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
     req = StockBarsRequest(symbol_or_symbols=UNIVERSE, timeframe=TimeFrame.Day,
                            start=datetime.now(timezone.utc) - timedelta(days=int(YEARS * 365.25) + 30),
-                           feed=DataFeed.IEX)
+                           feed=DataFeed.IEX, adjustment=Adjustment.ALL)
     raw = c.get_stock_bars(req).data
     out = {}
     for sym in UNIVERSE:
