@@ -6,6 +6,7 @@ __pycache__/
 htmlcov/
 /data/*
 !/data/daily100/
+!/data/swing1000/
 # The contract-listing cache is committed on purpose. This container has been rolled back to an
 # older filesystem snapshot four times, and each rollback discards whatever the caches had
 # rebuilt -- so a cache that only lives on disk keeps paying its 104-minute re-listing cost.

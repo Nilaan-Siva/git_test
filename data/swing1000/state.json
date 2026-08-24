@@ -1,0 +1,13 @@
+{
+  "started": "2026-08-24",
+  "ledger_cash": "20.01",
+  "position": {
+    "symbol": "GLD",
+    "qty": "2.300284017",
+    "entry_price": "426.03",
+    "entry_cost": "979.99",
+    "entry_date": "2026-08-24"
+  },
+  "day": 1,
+  "last_run_date": "2026-08-24"
+}
