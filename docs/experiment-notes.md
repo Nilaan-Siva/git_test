@@ -229,3 +229,32 @@ because someone believed automation could replace thinking."*
   and fixed on Aug 18 that had corrupted every prior backtest number in the project.
 - Real-money ladder advice to the user stands: side income → savings milestones → the
   validated strategy at $5k+ — the moonshot is a paper demonstration, not the plan.
+
+## Aug 24 — the swing pivot (parallel track: swing1000)
+
+User: "Let's do swing trading and see how much profit we can attain... look up more strategies
+like fair value gaps and etc." Bake-off run the same day on 3y of free Alpaca daily bars,
+5 bps/side, close-only fills, one position at a time (scripts/backtest_swing.py):
+
+| strategy | 3y return | trades | win% | avg/trade | maxDD | verdict |
+|---|---|---|---|---|---|---|
+| 20d breakout | **+82.1%** | 24 | 54% | +2.88% | 18% | deployed |
+| SPY buy-and-hold | +68.7% | — | — | — | ~25% | benchmark |
+| momentum rotation | -14.4% | 33 | 45% | +0.21% | 55% | rejected |
+| RSI(2) Connors | -26.9% | 135 | 58% | -0.21% | 49% | rejected |
+| fair value gap | **-90.2%** | 81 | 43% | -1.40% | 92% | rejected, emphatically |
+
+Lessons worth keeping:
+* FVG finally got its numeric burial: 43% win rate with a 2R target means the "imbalance
+  fills" story simply does not survive costs on the daily timeframe. It was rejected on
+  research before; now it is rejected on measurement.
+* RSI(2) is the blog world's favorite and it LOST here — high win rate (58%) hiding a
+  negative expectancy, the classic mean-reversion shape. Win rate is not edge.
+* The breakout's edge lives in single stocks: ETF-only collapses to +8.7%. Concentration
+  is the price of the return; the 10-day-low exit is the only bear-market defense.
+* Robust to 2x slippage (+77.9% at 10 bps). 24 trades is still a small sample; the window
+  was a bull tape. On the record: a bear year will likely give back a chunk.
+
+Deployed: scripts/swing1000.py, $1,000 paper ledger, 16-ticker universe (9 ETFs + 7 megacaps),
+daily Routine swing1000-daily at 19:35 UTC weekdays, kill switch at $100 equity.
+Moonshot100 continues in parallel on its own $100 ledger and Routines (day 5: skip).

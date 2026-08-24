@@ -1,0 +1,187 @@
+"""The $1,000 swing experiment: 20-day breakout, checked once a day near the close.
+
+Chosen over three alternatives by measurement, not preference (scripts/backtest_swing.py,
+3 years of daily bars, 5 bps slippage per side, close-only fills):
+
+    breakout  +82.1%  24 trades, 54% win, +2.88%/trade, 18% maxDD, every year positive
+    SPY B&H   +68.7%  the do-nothing benchmark it had to beat
+    momo      -14.4%  rsi2 -26.9%  fvg -90.2%   (tested and rejected, not skipped)
+
+Robustness checks that had to pass before this file existed: doubling slippage to 10 bps only
+cost 4 points (+77.9%); picks spread across 10 tickers, so it is not one lucky name. The known
+weaknesses, on the record: 24 trades is a small sample, the window was mostly a bull tape, and
+the edge concentrates in single stocks (ETF-only collapses to +8.7%) -- so a bear market will
+hurt, and the 10-day-low exit is the only thing limiting how much.
+
+Rules, executed at ~15:35 ET on the day's running price as the close proxy:
+  * flat: buy the strongest-momentum symbol whose price clears its PRIOR 20-day high,
+    98% of ledger, fractional shares. No signal, no trade -- most days are holds.
+  * holding: sell only when price closes under the PRIOR 10-day low. No profit target;
+    the whole edge is letting winners run for weeks.
+  * one position at a time; $1,000 hard-capped ledger, Alpaca's fake $100k does not exist.
+Every run appends a journal line whether it traded or not; the report comes from the journal.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STATE_DIR = REPO_ROOT / "data" / "swing1000"
+STATE_FILE = STATE_DIR / "state.json"
+JOURNAL_FILE = STATE_DIR / "journal.jsonl"
+
+STARTING_LEDGER = Decimal("1000.00")
+CASH_BUFFER = Decimal("0.98")
+UNIVERSE = ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLE", "XLF", "GLD", "TLT",
+            "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA"]
+ENTRY_WINDOW_DAYS = 20   # breakout above the prior N-day high
+EXIT_WINDOW_DAYS = 10    # exit below the prior N-day low
+KILL_SWITCH = Decimal("100")  # equity below this = experiment over, report and stop
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return {"started": date.today().isoformat(), "ledger_cash": str(STARTING_LEDGER),
+            "position": None, "day": 0}
+
+
+def save_state(state: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def journal(entry: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    entry["ts"] = datetime.now(timezone.utc).isoformat()
+    with JOURNAL_FILE.open("a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def wait_for_fill(client, order_id: str, timeout_s: int = 90):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        order = client.get_order_by_id(order_id)
+        if order.status in ("filled",):
+            return order
+        if order.status in ("canceled", "expired", "rejected"):
+            raise RuntimeError(f"order {order_id} ended {order.status}")
+        time.sleep(2)
+    raise RuntimeError(f"order {order_id} not filled after {timeout_s}s")
+
+
+def main() -> int:
+    load_dotenv(REPO_ROOT / ".env")
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    trading = TradingClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"], paper=True)
+    data = StockHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
+
+    state = load_state()
+    today = date.today().isoformat()
+    if state.get("last_run_date") != today:
+        state["day"] += 1
+    state["last_run_date"] = today
+    ledger = Decimal(state["ledger_cash"])
+    position = state["position"]
+
+    clock = trading.get_clock()
+    if not clock.is_open:
+        journal({"day": state["day"], "action": "market_closed"})
+        save_state(state)
+        print("market closed -- journalled only")
+        return 0
+
+    bars = data.get_stock_bars(StockBarsRequest(
+        symbol_or_symbols=UNIVERSE, timeframe=TimeFrame.Day,
+        start=datetime.now(timezone.utc) - timedelta(days=45), feed=DataFeed.IEX))
+
+    sig = {}
+    for sym in UNIVERSE:
+        series = bars.data.get(sym, [])
+        if len(series) < ENTRY_WINDOW_DAYS + 2:
+            continue
+        # today's (possibly partial) bar is the price proxy; windows use PRIOR completed bars
+        last = series[-1]
+        prior = series[:-1] if last.timestamp.date() == date.today() else series
+        px = float(last.close)
+        sig[sym] = {
+            "px": px,
+            "hi20": max(b.high for b in prior[-ENTRY_WINDOW_DAYS:]),
+            "lo10": min(b.low for b in prior[-EXIT_WINDOW_DAYS:]),
+            "mom20": px / float(prior[-ENTRY_WINDOW_DAYS].close) - 1,
+        }
+
+    actions = []
+
+    # ---- exit check ----
+    if position:
+        s = sig.get(position["symbol"])
+        if s and s["px"] < s["lo10"]:
+            order = trading.submit_order(MarketOrderRequest(
+                symbol=position["symbol"], qty=position["qty"],
+                side=OrderSide.SELL, time_in_force=TimeInForce.DAY))
+            filled = wait_for_fill(trading, order.id)
+            proceeds = (Decimal(str(filled.filled_avg_price)) * Decimal(str(filled.filled_qty))
+                        ).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            ledger += proceeds
+            pnl = proceeds - Decimal(position["entry_cost"])
+            actions.append(f"exit_10d_low: sold {position['symbol']} @ {filled.filled_avg_price} (P&L {pnl:+})")
+            position = None
+        elif s:
+            actions.append(f"hold {position['symbol']}: {s['px']:.2f} vs 10d-low {s['lo10']:.2f}")
+
+    # ---- entry check ----
+    if position is None and not any(a.startswith("exit") for a in actions):
+        cands = sorted(((s["mom20"], sym) for sym, s in sig.items() if s["px"] > s["hi20"]),
+                       reverse=True)
+        if cands:
+            sym = cands[0][1]
+            notional = (ledger * CASH_BUFFER).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            if notional >= Decimal("1"):
+                order = trading.submit_order(MarketOrderRequest(
+                    symbol=sym, notional=float(notional),
+                    side=OrderSide.BUY, time_in_force=TimeInForce.DAY))
+                filled = wait_for_fill(trading, order.id)
+                cost = (Decimal(str(filled.filled_avg_price)) * Decimal(str(filled.filled_qty))
+                        ).quantize(Decimal("0.01"))
+                ledger -= cost
+                position = {"symbol": sym, "qty": str(filled.filled_qty),
+                            "entry_price": str(filled.filled_avg_price),
+                            "entry_cost": str(cost), "entry_date": today}
+                actions.append(f"breakout_buy: {filled.filled_qty} {sym} @ {filled.filled_avg_price}")
+        elif position is None and not actions:
+            actions.append("flat: no symbol above its 20-day high")
+
+    equity = ledger + (Decimal(str(sig[position["symbol"]]["px"])) * Decimal(position["qty"])
+                       if position and position["symbol"] in sig else Decimal("0"))
+    state["ledger_cash"] = str(ledger)
+    state["position"] = position
+    save_state(state)
+    journal({"day": state["day"], "actions": actions, "ledger_cash": str(ledger),
+             "position": position, "equity": str(equity.quantize(Decimal("0.01"))),
+             "signals": {k: {kk: round(vv, 4) if isinstance(vv, float) else vv
+                             for kk, vv in v.items()} for k, v in sig.items()}})
+    print(f"day {state['day']}: {'; '.join(actions)}")
+    print(f"ledger cash={ledger} equity~={equity.quantize(Decimal('0.01'))}")
+    if equity and equity < KILL_SWITCH:
+        print("KILL SWITCH: equity below $100 -- experiment functionally over, report due")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
