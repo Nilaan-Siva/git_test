@@ -73,13 +73,44 @@ close the gap, and only these two, because the per-bet fraction cannot move:
    is ~3%. But $35 no longer buys a near-the-money contract on SPY or QQQ (see the table), so
    this collapses the sleeve to IWM-only and then to nothing. Not viable at this size.
 
-**Recommendation: option 1, and it needs your decision, not mine** — it means committing more
-paper capital to the core. Nothing has been changed in either bot pending that call.
+**Recommendation: option 1** — it means committing more paper capital to the core.
 
-Also worth stating plainly: swing1000 returned +69.6% against SPY's +75.0% over the backtest
-window. It roughly *matches* buy-and-hold, it does not beat it. Calling it the "safe core" is
-about its drawdown behaviour and its trend-following correlation profile, not about it being a
-proven money-maker versus just owning the index.
+### DONE, Aug 25 2026 — the user approved option 1
+
+Core grown $1,000 → $4,000 via `scripts/swing1000.py --deposit 3000`, executed while the GLD
+position was open (a deposit does not touch the position; the new cash deploys on the next
+entry). Resulting book:
+
+| sleeve | before | after | share after | benchmark |
+|---|---|---|---|---|
+| swing1000 (core) | $1,000 | $4,000 | 97.6% | 85–90% |
+| moonshot100 (sleeve) | $100 | $100 | 2.4% | 2–3% ✓ |
+| **total** | **$1,100** | **$4,100** | | |
+
+The sleeve is now inside the Universa benchmark. Three things changed with it, all so the
+growth cannot quietly corrupt the record:
+
+1. **`state["contributed"]` now tracks money-in.** Before this, "equity vs $1,000" was the
+   performance number; after a deposit that figure books handed-over capital as profit. Every
+   return is now measured against contributed capital, and the daily journal carries it.
+2. **Deposits are a journalled mode, not a hand-edit.** `--deposit` raises `ledger_cash` and
+   `contributed` by the same amount, so equity/contributed is unchanged at the instant of the
+   deposit — the strategy gets zero credit for money it was simply given.
+3. **The kill switch scales.** It was a flat $100 against a $1,000 ledger; it is now 10% of
+   contributed, so $400 today. Growing the core does not loosen the stop-out.
+
+Note the core share is now 97.6%, slightly above the 85–90% band. The remaining 10ish points
+would be cash or T-bills in a real barbell. This ledger holds no cash sleeve because swing1000
+is *already* flat on most days by construction — it is only in the market when a breakout is
+live — so the idle-cash position is implicit rather than an allocation. Worth revisiting if the
+strategy ever runs closer to fully invested.
+
+Also worth stating plainly, and it did not change when the core grew: swing1000 returned +69.6%
+against SPY's +75.0% over the backtest window. It roughly *matches* buy-and-hold, it does not
+beat it. Calling it the "safe core" is about its drawdown behaviour and its trend-following
+correlation profile, not about it being a proven money-maker versus just owning the index. A
+4x larger core is 4x the exposure to that same unproven-vs-index edge, which is the honest cost
+of fixing the barbell ratio this way.
 
 ## What is NOT on the table, permanently
 

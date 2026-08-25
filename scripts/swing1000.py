@@ -28,7 +28,18 @@ Rules, executed at ~15:35 ET on the day's running price as the close proxy:
     98% of ledger, fractional shares. No signal, no trade -- most days are holds.
   * holding: sell only when price closes under the PRIOR 10-day low. No profit target;
     the whole edge is letting winners run for weeks.
-  * one position at a time; $1,000 hard-capped ledger, Alpaca's fake $100k does not exist.
+  * one position at a time; hard-capped ledger, Alpaca's fake $100k does not exist. The cap is
+    state["contributed"], NOT the $1,000 in this file's name -- see the deposit note below.
+
+CORE SIZE, grown Aug 25 2026 from $1,000 to $4,000 on the user's explicit approval. The reason
+is the barbell ratio, not a change of confidence in this strategy: the moonshot's $100 convex
+sleeve was 9% of the book against a 2-3% benchmark, and the per-bet fraction there cannot be
+lowered (one option contract is indivisible -- 3% of a $50 ledger is $1.50 against a $47
+cheapest ask). Growing the core was the only viable lever. At $4,000 the sleeve is 2.4%, inside
+the benchmark. Deposits go through `--deposit AMOUNT`, never by hand-editing state.json, and
+raise ledger_cash and contributed together so a deposit can never be booked as a return. All
+performance is measured against contributed capital. The kill switch is 10% of contributed
+(currently $400), so growing the core does not silently loosen the stop-out.
 Every run appends a journal line whether it traded or not; the report comes from the journal.
 """
 from __future__ import annotations
@@ -48,20 +59,64 @@ STATE_DIR = REPO_ROOT / "data" / "swing1000"
 STATE_FILE = STATE_DIR / "state.json"
 JOURNAL_FILE = STATE_DIR / "journal.jsonl"
 
+# The filename says 1000 because that is what the experiment STARTED at on Aug 24 2026. The
+# core was grown to $4,000 on Aug 25 (see the deposit note below); the name is kept because the
+# swing1000-daily Routine invokes this file by path and renaming it would silently break the
+# schedule. Treat "1000" as a historical label, not a live number -- the live number is
+# state["contributed"].
 STARTING_LEDGER = Decimal("1000.00")
+# Deposits are tracked so returns stay honest. Once capital is added, equity-vs-$1,000 is a
+# meaningless number: it would book a deposit as profit. Every performance figure is measured
+# against state["contributed"] -- total money put in -- and every deposit is journalled.
+KILL_SWITCH_FRACTION = Decimal("0.10")  # was a flat $100 on a $1,000 ledger; now scales
 CASH_BUFFER = Decimal("0.98")
 UNIVERSE = ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLE", "XLF", "GLD", "TLT",
             "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA"]
 ENTRY_WINDOW_DAYS = 20   # breakout above the prior N-day high
 EXIT_WINDOW_DAYS = 10    # exit below the prior N-day low
-KILL_SWITCH = Decimal("100")  # equity below this = experiment over, report and stop
+# KILL_SWITCH is derived from contributed capital, not hardcoded, so growing the core does not
+# silently loosen the stop-out: 10% of money-in, whatever money-in currently is.
 
 
 def load_state() -> dict:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
+        st = json.loads(STATE_FILE.read_text())
+        # back-fill for state files written before deposits existed
+        st.setdefault("contributed", str(STARTING_LEDGER))
+        return st
     return {"started": date.today().isoformat(), "ledger_cash": str(STARTING_LEDGER),
-            "position": None, "day": 0}
+            "contributed": str(STARTING_LEDGER), "position": None, "day": 0}
+
+
+def kill_switch(state: dict) -> Decimal:
+    return (Decimal(state["contributed"]) * KILL_SWITCH_FRACTION).quantize(Decimal("0.01"))
+
+
+def deposit(amount: Decimal) -> int:
+    """Add capital to the core, auditably. Never edit state.json by hand for this.
+
+    A deposit is not a trade and not a return: it raises both ledger_cash and contributed by the
+    same amount, so equity/contributed is unchanged at the moment of the deposit and the strategy
+    gets no credit for money that was simply handed to it. Safe to run while a position is open
+    -- the position is untouched and the new cash is deployed on the next entry."""
+    if amount <= 0:
+        print("deposit must be positive"); return 1
+    state = load_state()
+    before_cash = Decimal(state["ledger_cash"])
+    before_contrib = Decimal(state["contributed"])
+    state["ledger_cash"] = str(before_cash + amount)
+    state["contributed"] = str(before_contrib + amount)
+    save_state(state)
+    journal({"day": state["day"], "actions": [f"deposit: +${amount}"], "event": "deposit",
+             "amount": str(amount), "ledger_cash": state["ledger_cash"],
+             "contributed_before": str(before_contrib), "contributed": state["contributed"],
+             "position": state.get("position"),
+             "note": "core grown to bring the moonshot sleeve within the 2-3% barbell benchmark; "
+                     "returns are measured against contributed capital, not against equity"})
+    print(f"deposited ${amount}: cash {before_cash} -> {state['ledger_cash']}, "
+          f"contributed {before_contrib} -> {state['contributed']}")
+    print(f"kill switch now ${kill_switch(state)} (10% of contributed)")
+    return 0
 
 
 def save_state(state: dict) -> None:
@@ -90,6 +145,8 @@ def wait_for_fill(client, order_id: str, timeout_s: int = 90):
 
 def main() -> int:
     load_dotenv(REPO_ROOT / ".env")
+    if "--deposit" in sys.argv:
+        return deposit(Decimal(sys.argv[sys.argv.index("--deposit") + 1]))
     from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
@@ -188,12 +245,17 @@ def main() -> int:
     save_state(state)
     journal({"day": state["day"], "actions": actions, "ledger_cash": str(ledger),
              "position": position, "equity": str(equity.quantize(Decimal("0.01"))),
+             "contributed": state["contributed"],
              "signals": {k: {kk: round(vv, 4) if isinstance(vv, float) else vv
                              for kk, vv in v.items()} for k, v in sig.items()}})
     print(f"day {state['day']}: {'; '.join(actions)}")
-    print(f"ledger cash={ledger} equity~={equity.quantize(Decimal('0.01'))}")
-    if equity and equity < KILL_SWITCH:
-        print("KILL SWITCH: equity below $100 -- experiment functionally over, report due")
+    contributed = Decimal(state["contributed"])
+    ks = kill_switch(state)
+    print(f"ledger cash={ledger} equity~={equity.quantize(Decimal('0.01'))} "
+          f"contributed={contributed} return={((equity / contributed - 1) * 100):.2f}%")
+    if equity and equity < ks:
+        print(f"KILL SWITCH: equity below ${ks} (10% of ${contributed} contributed) "
+              f"-- experiment functionally over, report due")
     return 0
 
 
