@@ -205,13 +205,19 @@ def run_variant(days, name: str, stop_mode=None, exit_mode="tp100", bet=BET_FRAC
                 direction = "call"
             elif sig["spot"] < sig["or_low"]:
                 direction = "put"
-            if direction and name in ("orb_vwap", "full_stack"):
+            if direction and ("orb_vwap" in name or "full_stack" in name):
                 if direction == "call" and sig["spot"] <= sig["vwap"]:
                     direction = None
                 if direction == "put" and sig["spot"] >= sig["vwap"]:
                     direction = None
-            if direction and name.startswith("full_stack") and not (weekday_ok and regime_ok):
-                direction = None
+            # "alldays" variants isolate the weekday filter's own contribution: same ORB+VWAP+
+            # regime stack as the live full_stack, but Tue/Thu are no longer excluded on principle.
+            if direction and name.startswith("full_stack"):
+                if "alldays" in name:
+                    if not regime_ok:
+                        direction = None
+                elif not (weekday_ok and regime_ok):
+                    direction = None
             if direction and "str" in name:
                 edge = sig["or_high"] if direction == "call" else sig["or_low"]
                 if abs(sig["spot"] - edge) / sig["spot"] < 0.001:  # <0.1% past the line = a poke
@@ -251,6 +257,10 @@ def main() -> int:
     print(f"modelled: ATM 0DTE, BS flat IV={IV:.0%}; entry at the 10:03 decision minute\n")
     print(f"{'variant':34s} {'trades':>6s} {'win%':>6s} {'avg ret':>8s} {'$100 ->':>10s} {'ruined':>11s}")
     combos = [
+        ("full_stack_str", "midday", "tp100", 0.50, "LIVE: M/W/F only, 50% bet"),
+        ("full_stack_alldays_str", "midday", "tp100", 0.50, "all 5 weekdays, 50% bet"),
+        ("full_stack_alldays_str", "midday", "trail", 0.50, "all 5 weekdays + trail"),
+        ("full_stack_alldays_str", "midday", "tp100", 0.95, "all 5 weekdays, LIVE 95% bet"),
         ("full_stack_str", "midday", "tp100", 0.95, "live bot (95% bet)"),
         ("full_stack_str", "midday", "partial", 0.95, "+ half out at +50%"),
         ("full_stack_str", "midday", "trail", 0.95, "+ breakeven trail"),
