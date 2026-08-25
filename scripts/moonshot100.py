@@ -62,6 +62,24 @@ BUDGET_FRACTION = Decimal("0.50")
 # buys a FURTHER out-of-the-money strike, not a smaller piece of the same one. Past this
 # distance the contract stops being a directional bet and becomes a lottery ticket with a
 # terrible fill, so the day is skipped instead. As the ledger grows this floor stops binding.
+#
+# THE BARBELL, AND WHY IT CANNOT BE APPLIED HERE (checked Aug 25 2026, not assumed).
+# The research briefing found that every survivable fast fortune on record ran its convex
+# sleeve at 2-3% of capital (Taleb/Universa), and flagged this bot's 50% as the reason it is
+# down 49%. That analysis is right, but the fix is NOT a smaller BUDGET_FRACTION, because the
+# arithmetic does not exist at this ledger. Live near-the-money 0DTE asks, sampled at 16:00
+# UTC Aug 25 within the 0.6% OTM band:
+#     SPY  $47 / $96 / $166      QQQ  $50 / $91 / $151      IWM  $14 / $21 / $54
+# At the current $50.65 ledger, 2-3% is $1.01-$1.52. Nothing trades there. Even 100% of the
+# ledger barely clears one contract. Setting BUDGET_FRACTION to 0.03 would not shrink the bet;
+# it would skip every single day forever, which is a silent shutdown disguised as a risk fix.
+#
+# The barbell is a PORTFOLIO-level ratio, not a per-bet one, and at that level it is nearly
+# right already: this bot's whole $100 ledger IS the convex sleeve. What is wrong is the ratio
+# against the safe core -- $100 against swing1000's $1,000 is ~9%, where the benchmark is 2-3%.
+# The lever is the size of the CORE, not the size of this bet. See docs/portfolio-sizing.md.
+# Leaving BUDGET_FRACTION at 0.50 is therefore deliberate: within a correctly-sized sleeve, a
+# sleeve that goes to zero is the expected and affordable outcome, which is the entire point.
 MAX_OTM_PCT = Decimal("0.006")
 CONTRACT_MULTIPLIER = 100
 

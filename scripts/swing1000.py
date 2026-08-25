@@ -1,17 +1,27 @@
 """The $1,000 swing experiment: 20-day breakout, checked once a day near the close.
 
 Chosen over three alternatives by measurement, not preference (scripts/backtest_swing.py,
-3 years of daily bars, 5 bps slippage per side, close-only fills):
+3 years of daily bars, 5 bps slippage per side, close-only fills). Numbers below are the
+CORRECTED ones, after a split-adjustment bug was found: Alpaca's default bars are RAW, so
+NVDA's 10:1 split read as a 90% crash and poisoned every window. Adjustment.ALL fixed it and
+moved the headline from a wrong +82.1% to:
 
-    breakout  +82.1%  24 trades, 54% win, +2.88%/trade, 18% maxDD, every year positive
-    SPY B&H   +68.7%  the do-nothing benchmark it had to beat
-    momo      -14.4%  rsi2 -26.9%  fvg -90.2%   (tested and rejected, not skipped)
+    breakout  +69.6%  24 trades, 50% win, 17.5% maxDD, every year positive
+    SPY B&H   +75.0%  the do-nothing benchmark -- breakout roughly MATCHES it, does not beat it
+    momo      +59.7%  rsi2 -16.8%  fvg -22.8%   (tested and rejected, not skipped)
 
-Robustness checks that had to pass before this file existed: doubling slippage to 10 bps only
-cost 4 points (+77.9%); picks spread across 10 tickers, so it is not one lucky name. The known
+Robustness checks that had to pass before this file existed: doubling slippage to 10 bps cost
+only a few points; picks spread across 10 tickers, so it is not one lucky name. The known
 weaknesses, on the record: 24 trades is a small sample, the window was mostly a bull tape, and
-the edge concentrates in single stocks (ETF-only collapses to +8.7%) -- so a bear market will
-hurt, and the 10-day-low exit is the only thing limiting how much.
+the edge concentrates in single stocks -- so a bear market will hurt, and the 10-day-low exit
+is the only thing limiting how much.
+
+SIZING IS FLAT 98% ON PURPOSE, and that was tested, not assumed. Volatility-targeted sizing --
+the most-replicated "improvement" in the factor literature -- was backtested against this exact
+config in scripts/backtest_swing_volsizing.py and LOST on every metric at every parameter, as
+did turtle-style stop-distance risk sizing. Return, maxDD, Sharpe and return/maxDD were all
+best at flat 98%, and every config degraded monotonically the further it moved from flat. See
+that file's docstring for why the published result does not transfer to a one-position bot.
 
 Rules, executed at ~15:35 ET on the day's running price as the close proxy:
   * flat: buy the strongest-momentum symbol whose price clears its PRIOR 20-day high,
