@@ -59,8 +59,15 @@ fail silently at the market open.
 
 1. `git log --oneline -1`. Older than the remote tip → rollback: `git fetch origin <branch> &&
    git reset --hard origin/<branch>`. Carry the tally.
-2. `ps aux | grep fetch_data` and `ps aux | grep cache_autocommit`. If the fetcher is dead
-   without `done:` in its log, relaunch **both** — fetcher first, then the supervisor ~8s later
+2. Check both processes with this exact command — **not** `pgrep -f fetch_data.py`:
+   ```
+   ps -eo pid,etime,cmd --no-headers | grep -E 'python.*fetch_data|bash scripts/cache_autocommit' | grep -v grep
+   ```
+   `pgrep -f` matches the check-in's own shell, whose command line contains the pattern, so it
+   reports both processes alive when both are dead. That produced a false "still running" report
+   on cycle #117. The `python.*` / `bash scripts/` anchors match only the real processes.
+
+   If the fetcher is dead without `done:` in its log, relaunch **both** — fetcher first, then the supervisor ~8s later
    so its `pgrep` guard sees a live process:
    ```
    nohup .venv/bin/python scripts/fetch_data.py --tickers QQQ DIA IWM XLK GLD \
