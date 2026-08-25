@@ -74,6 +74,20 @@ fail silently at the market open.
        --months 18 --puts-only --weeklies --force >> <scratch>/fetch_weekliesN.log 2>&1 &
    nohup bash scripts/cache_autocommit.sh 300 >> <scratch>/autocommit.log 2>&1 &
    ```
+
+   **Use ABSOLUTE paths in the relaunch, and `cd` to the repo root first.** The shell's working
+   directory persists between commands in a check-in turn, so an earlier `cd data/cache/bars`
+   (e.g. to count contracts per ticker) leaves the relaunch resolving `.venv/bin/python` from the
+   wrong directory. That fails with **exit 127**, which is the same code a genuinely fresh
+   container gives — so it reads as "the venv is gone, rebuild everything" when nothing is wrong.
+   Check `pwd` before concluding the container is bare. This cost a cycle on check-in #122.
+
+   **Drop finished tickers from `--tickers`.** Every relaunch re-walks all previously cached
+   contracts for every ticker in the list before it reaches live work, and that walk grows as the
+   cache does — by the time QQQ finished, its 8,770 cached contracts cost ~2 minutes of a ~20
+   minute container life. QQQ completed on Aug 25; the arg list is now
+   `--tickers DIA IWM XLK GLD` and the run goes straight into DIA. Drop each ticker as it
+   finishes. Nothing is lost: the cache is keyed per contract, not per run.
 3. Commit anything the supervisor has not: `git add data/cache/bars data/cache/contracts`.
 4. Measure `find data/cache/bars -type f | wc -l` against the previous check-in's number.
    **Measure against the remote, not the local tree** — a rolled-back local count says nothing.
