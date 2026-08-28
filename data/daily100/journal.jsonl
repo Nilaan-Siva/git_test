@@ -20,3 +20,4 @@
 {"day": 7, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-08-26T19:47:35.276527+00:00"}
 {"day": 8, "mode": "moonshot_open", "action": "skip_day_of_week", "ts": "2026-08-27T14:21:31.510983+00:00"}
 {"day": 8, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-08-27T19:47:39.859816+00:00"}
+{"day": 9, "mode": "moonshot_open", "action": "skip_unaffordable", "detail": "no put within 0.6% of 298.3 priced under the 25.32 budget", "ts": "2026-08-28T14:22:59.502840+00:00"}
