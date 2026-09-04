@@ -1,0 +1,65 @@
+# Hard risk limits. This file is the single source of truth for account protection.
+# The risk manager (optionsbot/risk/) reads this and enforces it as a pure veto gate: it can
+# reject a trade a strategy proposes, but it never loosens a limit on its own. The Phase 7
+# learning loop is NOT allowed to edit this file -- only strategies.yaml. Edit by hand, with
+# care; changes take effect on restart.
+
+# 5% of equity, max loss, per trade.
+#
+# Raised from your original 1% rule at your explicit request, to trade a smaller account harder.
+# This is not free, and the honest cost is the drawdown math: a single 5-loss streak (not rare --
+# a 30-delta credit spread wins ~70% of the time, so 5 losses in a row happens) compounds to
+# 1 - 0.95^5 = 22.6% NAV drawdown. Four losses alone reach 18.6%, already past the 15% kill
+# switch below -- so max_drawdown_halt_pct fires and halts the account well before a 5-loss
+# streak finishes, rather than after it. That is what makes 5% survivable at all: the kill
+# switch is a real backstop here, not a formality that only fires after the damage is done.
+#
+# Compare to the 15%-per-trade request this was chosen over: a SINGLE loss at 15% already equals
+# the kill-switch threshold, so the switch could never fire before the first loss did the harm
+# itself. At 5%, it still can.
+max_risk_per_trade_pct: 0.05
+# 30% total open risk -> 6 concurrent positions at 5% each (was 20%/4).
+#
+# Raised to chase a higher trade frequency: sustaining N trades/week needs roughly
+# N/week x ~19-day average hold concurrent positions open at once (Little's Law), and 4 slots
+# capped throughput at ~1.5/week no matter how many setups the strategy found. 6 slots gets to
+# ~2/week -- still short of the 3-4/week target, but a real bottleneck fix within a size of step
+# that was deliberately kept "modest" rather than the ~50% heat that 3-4/week would actually
+# require. Going further than this trades concurrent worst-case exposure directly for frequency;
+# revisit only alongside a real measured trade rate, not another guess.
+max_portfolio_heat_pct: 0.30
+max_portfolio_heat_pct_high_vix: 0.15 # halved when VIX is elevated -- 3 concurrent positions
+high_vix_threshold: 25
+
+max_daily_loss_pct: 0.03              # realized+unrealized daily loss -> halt new entries today
+max_weekly_loss_pct: 0.06             # halt and require manual review before resuming
+
+# Two positions per underlying, laddered across DIFFERENT expirations (enforced by
+# require_distinct_expirations -- two spreads on the same expiry are one bet, not two).
+max_positions_per_underlying: 2
+require_distinct_expirations: true
+max_positions_per_correlated_bucket: 4
+# Things that move together are one bet, however many tickers they span. These groupings are
+# what let the universe grow to a dozen names without the account quietly becoming a single
+# leveraged position on the S&P.
+# Buckets cover more names than universe.yaml trades, on purpose: the extra entries cost
+# nothing and mean a ticker added later is already correctly grouped rather than silently
+# escaping the correlation limit.
+correlated_buckets:
+  us_broad_market: [SPY, XSP, QQQ, IWM, DIA, XLK]  # XLK is ~half the Nasdaq by weight
+  international_equity: [EFA, EEM]
+  treasuries: [TLT, IEF]
+  precious_metals: [GLD, SLV]
+  energy: [XLE, USO]
+  financials: [XLF]
+
+earnings_blackout_days: 7             # no new positions within N days of an earnings date
+
+profit_target_pct: 0.50               # close at 50% of max credit captured
+stop_loss_multiple: 2.0               # close at 2x credit received as a realized loss
+time_stop_dte: 21                     # close regardless at 21 DTE (gamma risk accelerates)
+
+consecutive_loss_halt: 5              # N losses in a row -> halt, needs manual review
+max_drawdown_halt_pct: 0.15           # NAV drawdown from high-water mark -> full stop
+broker_disconnect_halt_seconds: 60    # broker link down this long during RTH -> alert/flatten
+data_staleness_halt_seconds: 300      # market data older than this -> no new entries
