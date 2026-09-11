@@ -1,7 +1,20 @@
 {
   "started": "2026-08-18",
-  "ledger_cash": "50.65",
-  "position": null,
-  "day": 15,
-  "last_run_date": "2026-09-10"
+  "ledger_cash": "28.65",
+  "position": {
+    "kind": "option",
+    "symbol": "IWM260911P00288000",
+    "qty": "1",
+    "entry_price": "0.22",
+    "entry_cost": "22.00",
+    "strike": "288.0",
+    "spot_at_entry": 289.375,
+    "direction": "put",
+    "expiration": "2026-09-11",
+    "entry_date": "2026-09-11",
+    "tp_order_id": "8821eaa3-b7b9-49c6-806e-463065167f1b",
+    "tp_price": "0.44"
+  },
+  "day": 16,
+  "last_run_date": "2026-09-11"
 }
