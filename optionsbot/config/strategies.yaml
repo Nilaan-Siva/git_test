@@ -1,0 +1,47 @@
+# Tunable strategy parameters. This is the surface the Phase 7 learning loop may propose
+# changes to -- always clamped within risk.yaml's limits, always surfaced for your approval,
+# never auto-applied. It never touches risk.yaml.
+
+put_credit_spread:
+  enabled: true
+  # Restored to the strict 30-50 / 0.05 / 30 entry profile after the corrected (post
+  # mark-to-market fix) walk-forwards showed the loosened 25-55 / 0.08 / 20 profile collapsed
+  # the win rate from ~81% to ~50%. The exit rules below in risk.yaml (50% profit target, 2x
+  # stop, 21-DTE time stop) are a 4:1 payout skew that needs roughly an 80% win rate to break
+  # even, so entry quality is not a tunable preference here -- it is what makes the exit math
+  # work at all. This matches the published research consensus for this structure (tastytrade's
+  # 45-DTE / 30-delta / manage-at-50%-and-21-DTE studies) rather than fighting it.
+  target_dte_min: 30
+  target_dte_max: 50
+  short_delta_target: 0.30
+  short_delta_tolerance: 0.05
+  min_iv_rank: 30
+  # spread_width (below) is legacy and NOT read by put_credit_spread anymore -- see
+  # target_width_pct_of_spot. A fixed points width can't serve a universe spanning a $58 ETF and
+  # a $770 one at once: 3 points is 0.4% of the expensive name and 5% of the cheap one, so the
+  # same setting was either too tight to matter or wide enough to be a naked short wearing a
+  # spread's name. Targeting a width as a FRACTION of spot and searching the real chain for the
+  # nearest listed strike is what lets one setting serve every ticker in the universe below.
+  #
+  # 0.4% is the width live SPY pricing validated (3/772 = 0.39%) before this became dynamic;
+  # kept as the default because that's the one width this project has real evidence on.
+  target_width_pct_of_spot: 0.004
+  spread_width: 3  # legacy -- iron_condor and wheel (both disabled below) still read this
+
+iron_condor:
+  enabled: false         # enable once put_credit_spread has a validated walk-forward backtest
+  target_dte_min: 30
+  target_dte_max: 50
+  short_delta_target: 0.16
+  short_delta_tolerance: 0.05
+  min_iv_rank: 50
+  spread_width: 1
+
+wheel:
+  enabled: false         # needs more capital per position (100 shares); disabled by default
+  target_dte_min: 30
+  target_dte_max: 45
+  short_delta_target: 0.30
+  short_delta_tolerance: 0.05
+  min_iv_rank: 0
+  spread_width: 0

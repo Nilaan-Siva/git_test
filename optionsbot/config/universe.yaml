@@ -1,0 +1,50 @@
+# Tradable underlyings and liquidity floors. The risk manager and backtest engine both reject
+# anything failing these floors regardless of strategy signal.
+#
+# WHY THIS LIST USED TO BE SIX HIGH-PRICED NAMES, AND WHY IT ISN'T ANYMORE
+#
+# put_credit_spread used to configure its width as a fixed number of points, and what a point
+# *means* depends entirely on the underlying's price: 3 points was 0.39% of SPY at $772 but 5.18%
+# of XLF at $58. On the cheap names the protective leg sat so far out of the money that it was
+# nearly worthless and the position behaved like a naked short put rather than a spread -- max
+# loss was still capped, so no risk limit objected, but it wasn't the trade the strategy meant to
+# place. That was true no matter how the one shared width was tuned: narrower didn't rescue the
+# cheap names either, since a $1-wide TLT spread collected ~$22 against $2.60 of round-trip
+# commission. So the universe was six high-priced ETFs, because that's what one fixed width could
+# serve.
+#
+# The strategy no longer has one fixed width. It now targets a width as a FRACTION of each
+# underlying's spot price (see strategies.yaml's target_width_pct_of_spot) and searches the real
+# option chain for whichever listed strike sits closest to that dollar amount -- so the same
+# setting produces a sensibly-sized spread on a $58 ETF and a $770 one alike.
+# strategy/filters.check_width_suits_underlying still enforces a cap (2% of spot) against
+# whatever width the chain actually offers, so a name whose strike grid is too sparse to produce
+# a sane spread still stands itself down and says so in the journal -- the cap didn't move, only
+# the width it's checking against is dynamic now.
+#
+# That is what makes the six previously-excluded names addable: TLT, SLV, XLE, USO, XLF, and EEM
+# rejoin the SPY/QQQ/DIA/IWM/XLK/GLD core below. All twelve are already grouped into
+# risk.yaml's correlated_buckets, so adding them widens the set of independent signals the
+# strategy can find without the heat cap silently becoming a leveraged bet on one sector.
+
+# Cut back from twelve names to six after the corrected backtests showed the six cheap
+# additions (SLV, TLT, XLE, USO, XLF, EEM) were where every loss concentrated. The dynamic
+# width (target_width_pct_of_spot) fixed the *proportions* of a spread on a $58 ETF, but it
+# cannot fix the two costs that stay fixed in dollars: strikes come in $1 minimum increments,
+# and the ~$2.60 round-trip commission plus crossed bid/ask is the same whether the credit is
+# $15 or $150. On a $1-wide SLV spread passing the 15%-of-width credit floor, those fixed
+# costs are a 20-30% structural tax on every trade -- no entry filter can out-select that.
+# The six survivors are the names whose spot price makes a 0.4%-of-spot spread wide enough
+# in DOLLARS for fixed costs to be noise, which is the same conclusion the original
+# fixed-width universe reached from the other direction.
+tickers:
+  - SPY   # S&P 500
+  - QQQ   # Nasdaq 100
+  - DIA   # Dow 30
+  - IWM   # Russell 2000 small caps
+  - XLK   # US technology sector
+  - GLD   # gold -- the only name here uncorrelated with equities
+
+min_option_open_interest: 100
+min_option_volume_when_oi_unknown: 10
+max_bid_ask_spread_pct_of_mid: 0.10
