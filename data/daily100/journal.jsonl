@@ -41,3 +41,4 @@
 {"day": 17, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-09-14T19:47:47.819753+00:00"}
 {"day": 18, "mode": "moonshot_open", "action": "skip_day_of_week", "ts": "2026-09-15T14:05:44.243474+00:00"}
 {"day": 18, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-09-15T19:47:40.065072+00:00"}
+{"day": 19, "mode": "moonshot_open", "action": "skip_macro_event", "detail": "FOMC rate decision 14:00 ET mid-session -- whipsaw risk, day skipped", "ts": "2026-09-16T14:06:24.225979+00:00"}
