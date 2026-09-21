@@ -47,3 +47,4 @@
 {"day": 20, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-09-17T19:47:27.220420+00:00"}
 {"day": 21, "mode": "moonshot_open", "action": "skip_no_breakout_anywhere", "scan": {"SPY": "inside_range [759.57, 761.75] spot 759.89", "QQQ": "breakout_too_marginal (0.0523% past the line)", "IWM": "inside_range [282.94, 285.265] spot 283.19"}, "ts": "2026-09-18T14:12:31.432705+00:00"}
 {"day": 21, "mode": "moonshot_close", "action": "nothing_to_close", "ts": "2026-09-18T19:48:06.347735+00:00"}
+{"day": 22, "mode": "moonshot_open", "action": "skip_no_breakout_anywhere", "scan": {"SPY": "inside_range [766.04, 767.72] spot 767.68", "QQQ": "breakout_too_marginal (0.0205% past the line)", "IWM": "inside_range [284.92, 286.32] spot 285.49"}, "ts": "2026-09-21T14:13:36.571415+00:00"}
