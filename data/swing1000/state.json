@@ -1,0 +1,14 @@
+{
+  "started": "2026-08-24",
+  "ledger_cash": "78.52",
+  "position": {
+    "symbol": "META",
+    "qty": "5.730129885",
+    "entry_price": "671.36",
+    "entry_cost": "3846.98",
+    "entry_date": "2026-09-15"
+  },
+  "day": 19,
+  "last_run_date": "2026-09-22",
+  "contributed": "4000.00"
+}
